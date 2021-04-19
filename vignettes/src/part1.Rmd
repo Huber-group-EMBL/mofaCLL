@@ -1,0 +1,162 @@
+---
+title: 'Part 1: Prepare MOFA model'
+output:
+  BiocStyle::html_document
+---
+
+# Prepare MOFA model
+
+```{r, message=FALSE, include=!exists(".standalone"), eval=!exists(".standalone")}
+library(mofaCLL)
+library(reticulate)
+library(DESeq2)
+library(sva)
+library(MultiAssayExperiment)
+library(MOFA)
+library(tidyverse)
+options(stringsAsFactors=FALSE)
+```
+
+```{r echo=FALSE}
+#set the global ggplot theme
+theme_set(theme_bw() + theme(axis.text = element_text(size=12), 
+                             axis.title = element_text(size=14),
+                             plot.title = element_text(size = 15, hjust =0.5, face="bold")))
+```
+
+## Prepare each single omic dataset
+
+Load datasets
+```{r}
+data("drug","gene","rna")
+```
+
+Download methylation dataset from server to a temporary folder
+(The methylation data will be uploaded to ExperimentHub later)
+```{r}
+methPath <- file.path(tempdir(),"meth.RData")
+if(!file.exists(methPath)) {
+  download.file("https://www.huber.embl.de/users/jlu/data/meth.RData",
+                methPath)
+  load(methPath)
+} else {
+  load(methPath)
+}
+```
+
+### Drug screening
+```{r}
+viabMat <- mutate(drug, id = paste0(Drug,"_",concIndex)) %>%
+  select(patientID, id, normVal) %>%
+  spread(key = patientID, value = normVal) %>%
+  data.frame() %>% column_to_rownames("id") %>% 
+  as.matrix()
+```
+
+### RNA sequencing
+```{r}
+rna.vst<-DESeq2::varianceStabilizingTransformation(rna)
+exprMat <- assay(rna.vst)
+nTop = 5000
+sds <- genefilter::rowSds(exprMat)
+exprMat <- exprMat[order(sds, decreasing = T)[1:nTop],]
+```
+
+### DNA methylation array
+```{r}
+methData <- assays(meth)[["beta"]]
+nTop = 5000
+sds <- genefilter::rowSds(methData)
+methData <- methData[order(sds, decreasing = T)[1:nTop],]
+```
+
+### Genetics
+```{r}
+gene <- t(gene)
+```
+
+### Assemble multiAssayExperiment object
+
+Create object
+```{r}
+mofaData <- list(Drugs = viabMat, 
+                mRNA = exprMat,
+                Mutations = gene, 
+                Methylation = methData)
+
+# Create MultiAssayExperiment object 
+mofaData <- MultiAssayExperiment::MultiAssayExperiment(
+  experiments = mofaData
+)
+```
+
+Only keep samples that have at least three assays
+```{r}
+useSamples <- MultiAssayExperiment::sampleMap(mofaData) %>%
+  as_tibble() %>% group_by(primary) %>% summarise(n= length(assay)) %>%
+  filter(n >= 3) %>% pull(primary)
+mofaData <- mofaData[,useSamples]
+```
+
+Dimensions for each dataset
+```{r}
+experiments(mofaData)
+```
+
+How many samples have the complete datasets
+```{r}
+table(table(sampleMap(mofaData)$primary))
+```
+
+## Build MOFA object
+
+Build MOFA object from multiAssayExperiment object
+```{r}
+# Build the MOFA object
+MOFAobject <- createMOFAobject(mofaData)
+MOFAobject
+```
+
+Overview of data
+```{r mofaModel, fig.height=6, fig.width=12}
+p <- plotDataOverview.m(MOFAobject)
+p
+```
+
+## Setup MOFA training parameters
+
+Define data options
+```{r}
+DataOptions <- getDefaultDataOptions()
+```
+
+Define model options
+```{r}
+ModelOptions <- getDefaultModelOptions(MOFAobject)
+ModelOptions$numFactors <- 30
+ModelOptions$sparsity <- TRUE
+ModelOptions
+```
+
+Define training options
+```{r}
+TrainOptions <- getDefaultTrainOptions()
+
+# Automatically drop factors that explain less than 2% of variance in all omics
+TrainOptions$DropFactorThreshold <- 0.02
+TrainOptions$tolerance <- 0.01
+TrainOptions
+```
+
+## Run MOFA model 
+
+```{r, eval=FALSE}
+MOFAobject <- prepareMOFA(
+  MOFAobject, 
+  DataOptions = DataOptions,
+  ModelOptions = ModelOptions,
+  TrainOptions = TrainOptions
+)
+
+MOFAobject <- runMOFA(MOFAobject)
+```

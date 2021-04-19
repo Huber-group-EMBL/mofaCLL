@@ -1,0 +1,477 @@
+---
+title: 'Part 4: Characterization of F4 on genomic and epigenomic level'
+author: "Junyan Lu"
+date: "`r doc_date()`"
+output:
+  BiocStyle::html_document
+---
+
+```{r, message=FALSE, include=!exists(".standalone"), eval=!exists(".standalone")}
+#Libraries
+library(mofaCLL)
+library(gridExtra)
+library(ggrepel)
+library(ggbeeswarm)
+library(GEOquery)
+library(DESeq2)
+library(MOFA)
+library(grImport)
+library(fgsea)
+library(limma)
+library(MultiAssayExperiment)
+library(pheatmap)
+library(cowplot)
+library(tidyverse)
+```
+
+
+# Association between F4 (CLL-PD) and genomics
+
+Load datasets
+```{r}
+data("mofaOut","gene","rna","mutLoad","tabFACS")
+```
+
+Download methylation dataset from server to a temporary folder
+(The methylation data will be uploaded to ExperimentHub later)
+```{r, eval=TRUE}
+methPath <- file.path(tempdir(),"meth.RData")
+if(!file.exists(methPath)) {
+  download.file("https://www.huber.embl.de/users/jlu/data/meth.RData",
+                methPath)
+  load(methPath)
+} else {
+  load(methPath)
+}
+```
+
+
+Process MOFA model
+```{r}
+#get factor values
+facTab <- getFactors(
+  MOFAobject, 
+  factors = "LF4",
+  as.data.frame = TRUE
+) %>% as_tibble() 
+
+#get all factors
+facTab.all <- getFactors(
+  MOFAobject,
+  factors = "all",
+  as.data.frame = TRUE
+) %>% as_tibble()
+
+#get weights
+weightTab <- getWeights(
+  MOFAobject,
+  factors = "all",
+  as.data.frame = TRUE
+) %>% as_tibble() %>%
+  mutate(feature = ifelse(feature == "IGHV.status", "IGHV", feature))
+#get training data
+trainData <- getTrainData(MOFAobject)
+
+detach("package:MOFA", unload = TRUE)
+```
+
+
+## Loading of features in the genomic view
+```{r,fig.width=6, fig.height=6}
+plotGeneWeight <- plotTopWeights.m(weightTab, view =  "Mutations", factor = "LF4", nfeatures = 5) + ylab("Absolute loading on F4 (CLL-PD)") +
+  theme(plot.margin = margin(10,0,10,0))
+plotGeneWeight
+```
+
+## Test of associations between genetic variations with latent factor
+
+Student's t-test
+```{r}
+sampleOverlap <- intersect(rownames(gene.unfiltered), facTab$sample)
+genData <- gene.unfiltered[sampleOverlap,]
+
+#remove gene with higher than 40% missing values
+genData <- genData[,colSums(is.na(genData))/nrow(genData) <= 0.4]
+
+#remove genes with less than 3 mutated cases
+genData <- genData[,colSums(genData, na.rm = TRUE) >= 3]
+
+#t-test
+y <- facTab[match(sampleOverlap, facTab$sample),]$value
+tRes <- apply(genData, 2, function(x) {
+  res <- t.test(y ~ as.factor(x), var.equal = TRUE)
+  data.frame(p = res$p.value, 
+             df = res$estimate[[2]] - res$estimate[[1]])
+}) %>% bind_rows() %>% mutate(gene = colnames(genData),
+                              p.adj = p.adjust(p, method = "BH")) %>%
+  arrange(p)
+filter(tRes, p.adj <0.05) %>% mutate_if(is.numeric, formatNum, digits =3, format = "e") %>% DT::datatable()
+
+#write_csv2(tRes, "sourceData_3b.csv")
+```
+
+Volcano plot
+```{r, fig.height=5, fig.width=6}
+plotGeneVolcano <- plotVolcano(tRes, posCol = colList[1], negCol = colList[2],
+            x_lab = "Difference of mean", ifLabel = TRUE) + 
+  theme(legend.position = "none",
+        plot.margin = margin(8,8,8,8),
+        axis.title.y = element_text(vjust=0))
+plotGeneVolcano
+```
+
+Boxplots of associated genes (5% FDR)
+```{r, fig.height=10, fig.width=10}
+tRes.sig <- filter(tRes, p.adj <= 0.05)
+plotList <- lapply(tRes.sig$gene, function(geneName) {
+   plotTab <- tibble(factor = y, 
+                     status = genData[,geneName]) %>%
+     filter(!is.na(status)) %>%
+     mutate(status = ifelse(status ==1, "mut","wt")) %>%
+     group_by(status) %>% mutate(n=n()) %>% ungroup() %>%
+     mutate(status = sprintf("%s\n(N=%s)",status,n)) %>%
+     arrange(desc(n)) %>% mutate(status = factor(status, levels = unique(status))) %>%
+     mutate(geneName = italicizeGene(geneName))
+   pval <- formatNum(filter(tRes, gene == geneName)$p, digits = 1, format="e")
+   titleText <- sprintf("%s~' ('~italic(P)~'='~'%s'~')'",unique(plotTab$geneName),pval) 
+   ggplot(plotTab, aes(x=status, y = factor)) +
+     geom_boxplot(width=0.3, aes(fill = status), outlier.shape = NA) + 
+     geom_beeswarm(col = "black", size =1,cex = 1.5, alpha=0.5) +
+     ggtitle(parse(text = titleText))+
+     #ggtitle(sprintf("%s (p = %s)",geneName, formatNum(pval, digits = 1, format = "e"))) + 
+     ylab("F4 value") + xlab("") +
+     scale_fill_manual(values = colList[3:4]) +
+     theme_full +
+     theme(legend.position = "none",
+           plot.title = element_text(hjust = 0.5),
+           plot.margin = margin(3,3,3,3))
+})
+grid.arrange(grobs = plotList, ncol=3)
+plotGeneViolin <- plotList
+```
+
+Heatmap plot showing associated genetic features (5% FDR), arranged by F4 values.   
+```{r,fig.width=8, fig.height=4}
+annoCol <- data.frame(row.names = sampleOverlap,
+                      F4 = facTab[match(sampleOverlap, facTab$sample),]$value)
+annoCol <- annoCol[order(annoCol$F4),,drop = FALSE]
+plotMat <- t(genData[rownames(annoCol),filter(tRes, p.adj <= 0.05)$gene])
+plotMat[is.na(plotMat)] <- 0
+breaks <- c(0,0.5,1)
+colors <- c("white","black")
+rowLabs <- italicizeGene(rownames(plotMat))
+plotGeneHeatmap <- pheatmap(plotMat, cluster_cols = FALSE, cluster_rows = FALSE, 
+                            annotation_col = annoCol, border_color = "black",
+         breaks = breaks, color = colors, show_colnames = FALSE, 
+         labels_row = parse(text = rowLabs),
+         legend = FALSE, silent = TRUE)$gtable
+plot_grid(plotGeneHeatmap)
+```
+
+## Correlation with the mutation load
+
+## Scatter plot of correlation with mutations load and recurrent mutation load
+
+```{r}
+compareTab <- filter(mutLoadSum, group == "Overall", subgroup == "Overall") %>%
+  select(patID, platform, n)
+sumReCurr.cnv <- gene.unfiltered[,c("trisomy12","del13q","del11q","del17p",
+                                    "gain2p","gain8q","del8p","del6q","del18p","del20p")]
+sumRecurr.snv <- gene.unfiltered[,71:113] #only select recurrent gene mutations
+sumRecurr <- cbind(sumRecurr.snv, sumReCurr.cnv) %>%
+  data.frame() %>% rownames_to_column("patID") %>%
+  gather(key = "gene", value = "status",-patID) %>%
+  group_by(patID) %>% summarise(n.recurr = sum(status,na.rm = TRUE))
+
+compareTab <- left_join(compareTab, sumRecurr, by = "patID") %>% 
+  mutate(LF4 = facTab[match(patID, facTab$sample),]$value) %>%
+  filter(!is.na(LF4),!is.na(n),!is.na(n.recurr))
+```
+
+## Assocations with total number of mutations
+
+Function to plot and annotate assocations
+```{r}
+plotCor <- function(plotTab, x, y, x_label, y_label, title, color = "black") {
+  corRes <- cor.test(plotTab[[x]], plotTab[[y]], use = "pairwise.complete.obs")
+  annoCoef <- paste("'coefficient ='~",format(corRes$estimate,digits = 2))
+  annoP <- paste("italic(P)~'='~",formatNum(corRes$p.value, digits = 1, format = "e"))
+  
+  ggplot(plotTab, aes_string(x = x, y = y)) + 
+    geom_point(shape = 21, fill =color, size=3) + 
+    geom_smooth(method = "lm", se=FALSE, color = "grey50", linetype ="dashed" ) + 
+    annotate("text", x = max(plotTab[[x]]), y = Inf, label = annoCoef,
+           hjust=1, vjust =1.5, size = 5, parse = TRUE, col= colList[1]) +
+    annotate("text", x = max(plotTab[[x]]), y = Inf, label = annoP,
+           hjust=1, vjust =3, size = 5, parse = TRUE, col= colList[1]) +
+    ylab(y_label) + xlab(x_label) + ggtitle(title) +
+    theme_full + theme(plot.margin = margin(8,8,8,8))
+}
+```
+
+#### WES
+```{r, fig.width=5, fig.height=5}
+plotTab <- filter(compareTab, platform == "WES") 
+corTotal.wes <- plotCor(plotTab, "LF4", "n", "CLL-PD", "Total number of mutations",
+        sprintf("WES dataset (n=%s)",nrow(plotTab)), colList[[6]])
+corTotal.wes
+```
+
+#### WGS
+```{r, fig.width=5, fig.height=5}
+plotTab <- filter(compareTab, platform == "WGS") 
+corTotal.wgs <- plotCor(plotTab, "LF4", "n", "CLL-PD", "Total number of mutations",
+        sprintf("WGS dataset (n=%s)",nrow(plotTab)), colList[[6]])
+corTotal.wgs
+```
+
+### Assocations with recurrent aberration
+
+```{r, fig.width=5, fig.height=5}
+plotTab <- distinct(compareTab, patID, .keep_all = TRUE)
+corRecurr <- plotCor(plotTab, "LF4", "n.recurr", "CLL-PD", "Number of recurrent aberrations",
+        "",colList[[5]]) 
+corRecurr
+#write_csv2(plotTab, "sourceData_3c.csv")
+```
+
+
+# Assocation between F4 (CLL-PD) and DNA methylation
+
+## Correlation test using linear model
+
+```{r, cache=TRUE}
+methMat <- assays(meth[,colnames(meth) %in% facTab$sample])[["beta"]]
+factorMatrix <- facTab.all %>% spread(key = factor, value = value) %>%
+  data.frame() %>% column_to_rownames("sample") 
+factorMatrix <- factorMatrix[colnames(methMat),]
+factorMatrix <- factorMatrix[,complete.cases(t(factorMatrix))]
+designMat <- model.matrix(~1 + .,factorMatrix)
+fit <- lmFit(methMat, designMat)
+fit2 <- eBayes(fit)
+corRes <- limma::topTable(fit2, number ="all", coef = "LF4", adjust.method = "BH") %>%
+  rownames_to_column("id") %>% as_tibble()
+corRes.LF1 <- limma::topTable(fit2, number ="all", coef = "LF1", adjust.method = "BH") %>%
+  rownames_to_column("id") %>% as_tibble()
+```
+
+Number of tested associations
+```{r}
+dim(methMat)
+```
+
+## Compare number of significant correlations in F1 and F4
+
+```{r, fig.height=4, fig.width=6}
+numTab.LF4 <- filter(corRes, adj.P.Val <= 0.01) %>% mutate(direction = ifelse(t>0, "pos","neg")) %>%
+  group_by(direction) %>% summarise(number = length(id)) %>%
+  mutate(factor = "F4 (CLL-PD)")
+numTab.LF1 <- filter(corRes.LF1, adj.P.Val <= 0.01) %>% mutate(direction = ifelse(t>0, "pos","neg")) %>%
+  group_by(direction) %>% summarise(number = length(id)) %>% 
+  mutate(factor = "F1")
+
+plotTab <- bind_rows(numTab.LF4, numTab.LF1)
+sigNumPlot <- ggplot(plotTab, aes(x=factor, y=number, fill = direction)) + 
+  geom_bar(stat = "identity", width = 0.8,
+           position = position_dodge2(width = 6),
+           col = "black") +
+  geom_text(aes(label=number), 
+            position = position_dodge(width = 0.9),
+            size=4, hjust=-0.1)  +
+  scale_fill_manual(name = "", labels = c("Hypomethylated","Hypermethylated"), values = colList) +
+  coord_flip(ylim = c(0,70000), expand = FALSE) + xlab("") + ylab("Number of significant associations") + theme_half +
+  theme(legend.position = c(0.75,0.22), legend.text = element_text(size=12), legend.background = element_rect(fill = NA))
+sigNumPlot
+```
+
+
+## Correlation between mean methylation values and F4
+```{r, fig.width=5, fig.height=5}
+meanBeta <- colMeans(methMat)
+plotTab <- tibble(patID = names(meanBeta),
+                  meanBeta = meanBeta,
+                  LF4 = facTab[match(patID, facTab$sample),]$value)
+
+corBeta <- cor.test(plotTab$meanBeta, plotTab$LF4)
+
+annoCoef <- paste("'coefficient ='~",format(corBeta$estimate,digits = 2))
+annoP <- paste("italic(P)~'='~",formatNum(corBeta$p.value, digits = 1, format = "e"))
+
+plotMeanBeta <- ggplot(plotTab, aes(x = LF4, y = meanBeta)) + 
+  geom_point(shape = 21, fill =colList[3], size=3) + 
+  geom_smooth(method = "lm", se=FALSE, color = "grey50", linetype ="dashed" ) + 
+  annotate("text", x = 3, y = Inf, label = annoCoef,
+           hjust=1, vjust =1.5, size = 5, parse = TRUE, col= colList[1]) +
+  annotate("text", x = 3, y = Inf, label = annoP,
+           hjust=1, vjust =3, size = 5, parse = TRUE, col= colList[1]) +
+  ylab("Mean beta values") + xlab("CLL-PD") +
+  theme_full 
+
+#write_csv2(plotTab, "sourceData_3e.csv")
+plotMeanBeta
+```
+
+## Enrichment of F4 associated probes in the PMD region
+
+### Probes in the CLL specific PMD region
+
+Read list of CGs that lie in the PMD region, according to Mallm et al. 2019 (PMID: 31118277) 
+```{r}
+probesPMD <- readLines(system.file("externalData/PMD_probes.txt", package = "mofaCLL"))
+```
+
+How many CpGs correlated with LF4 are in the PMD region?
+```{r}
+sigProbe <- filter(corRes, adj.P.Val <=0.01, t <0)$id
+table(sigProbe %in% probesPMD)
+```
+
+Fisher's exact test
+```{r}
+testTab <- table(rownames(meth) %in% sigProbe, rownames(meth) %in% probesPMD)
+fisher.test(testTab, alternative = "greater")
+```
+
+### Probes in the general solo-WCGW PMD region
+
+Download the list of CG probes in the solo-WCGW PMD region (Zhou et al., 2018, PMID: 29610480)
+```{r}
+wcgwPath <- system.file("externalData/hm450.comPMD.probes.tsv", package = "mofaCLL")
+probesPMD.wcgw <- read_delim(wcgwPath, delim = "\t", col_names = FALSE, skip = 1)[[2]]
+```
+
+How many probes annotated as WCGW probes are on our array?
+```{r}
+onArray <- probesPMD.wcgw %in% rownames(meth)
+table(onArray)
+#subset
+probesPMD.wcgw <- probesPMD.wcgw[onArray]
+```
+
+How many CpGs correlated with LF4 are in the WCGW region?
+```{r}
+table(sigProbe %in% probesPMD.wcgw)
+```
+
+Fisher's exact test
+```{r}
+testTab <- table(rownames(meth) %in% sigProbe, rownames(meth) %in% probesPMD.wcgw)
+fisher.test(testTab, alternative = "greater")
+```
+
+FGSEA tset and plot
+```{r WCGWenrich, fig.height=4, fig.width=6}
+sigList <- list("Solo-WCGW CpGs in PMDs" = probesPMD.wcgw)
+enrichRes <- runFGSEA(corRes, sigList, pcut =1, maxSize = 10000, name = "id", stat = "t")
+enrichPlot <- enrichRes$plots[[1]] + theme(plot.margin = margin(1,20,1,20))
+enrichPlot
+```
+
+
+## Association between CLL-PD(F4) and CLL proliferation ability (Ki-67 populaiton)
+
+### Paired t-test
+
+```{r}
+testTab <- tabFACS %>% mutate(posKI = CD19posKI67pos)
+waterTab <- filter(testTab, treat == "H2O") %>% select(patID, posKI) %>%
+  dplyr::rename(popWater = posKI)
+testTab <- filter(testTab, treat!="H2O") %>%
+  dplyr::rename(popTreat = posKI) %>% left_join(waterTab)
+```
+
+```{r}
+resPair <- group_by(testTab, treat, groupLF) %>% nest() %>%
+  mutate(m = map(data,~t.test(.$popTreat,.$popWater, paired = TRUE))) %>%
+  mutate(res = map(m, broom::tidy)) %>% unnest(res) %>%
+  select(treat, groupLF, p.value) %>% arrange(p.value)
+resPair
+```
+
+
+### T-test for compare CLL-PD high and low for CpG treatment
+
+#### Univariate test
+```{r}
+testTab <- tabFACS %>% filter(treat == "CPG") %>% mutate(posKI = CD19posKI67pos)
+resUni <- t.test(posKI ~ groupLF, testTab)
+resUni
+```
+
+#### Multi-vairate test
+```{r}
+resMulti <- car::Anova(lm(posKI ~ groupLF + IGHV, testTab))
+resMulti
+```
+
+### Box plots to show associations
+
+```{r, fig.height=5, fig.width=6}
+plotTab <- tabFACS %>% mutate(posKI = CD19posKI67pos/(CD19posKI67pos+CD19posKI67neg)) %>%
+  mutate(subtype = plyr::revalue(IGHV, c("M"="M-CLL","U"="U-CLL")),
+         group = plyr::revalue(groupLF, c("high" = "high CLL-PD\n(n=12)","low"="low CLL-PD\n(n=12)")),
+         treat = plyr::revalue(treat, c("H2O" = "water", "CPG" = "CpG ODN"))) %>%
+  mutate(group = factor(group,levels = c("high CLL-PD\n(n=12)","low CLL-PD\n(n=12)")),
+         treat = factor(treat, levels = c("water","CpG ODN"))) %>%
+  arrange(posKI) %>% mutate(patID = factor(patID, levels = unique(patID)))
+
+annoText <- tibble(tt = c(paste("italic(P)~'=",formatNum(resPair$p.value[1], digits = 2),"'"),
+                          paste("italic(P)~'=",formatNum(resPair$p.value[2], digits = 2),"'")), 
+                   group  = c("high CLL-PD\n(n=12)","low CLL-PD\n(n=12)"))
+
+plotCpG <- ggplot(plotTab, aes(x=treat, y = CD19posKI67pos)) + #geom_boxplot(outlier.alpha = NA) + 
+  geom_point(aes(fill = IGHV), shape =21, size =4, cex=4, alpha=0.8) +
+  geom_segment(x =1, xend =2, y=40,yend=40, size=0.2) +
+  geom_line(aes(x=treat,y=CD19posKI67pos, group = patID), col = "grey50", linetype = "dashed") +
+  geom_text(data =annoText, aes(label = tt), x = 1.5, y =40, vjust=-1, parse=TRUE) +
+  scale_fill_manual(values = colList[c(3,6)]) +
+  facet_wrap(~group) +
+  ylim(c(0,55)) + theme_half+
+  theme(legend.position = "bottom", strip.text = element_text(size=15, face= "bold"),
+        strip.background = element_rect(fill = "white",color = "white"),
+        axis.text.x = element_text(size=13),
+        legend.text = element_text(size=13),
+        legend.title = element_text(size=13),
+        legend.margin = margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5)) +
+  ylab("% Ki-67+ CD19+ cells") + xlab("")
+plotCpG
+```
+
+## Organizing plots for Section 3 in the manuscript
+
+### Main Figure 3
+```{r figure3, fig.height=9, fig.width=16}
+enMyc <- pictureGrob(readPicture(system.file("externalData//MYC.eps.xml", package = "mofaCLL")))
+
+title = ggdraw() + draw_figure_label("Figure 3", fontface = "bold", position = "top.left",size=22)
+
+pout <- plot_grid(plot_grid(plotGeneWeight, plotGeneVolcano, ncol=1, labels = c("a","b"), 
+                            rel_heights = c(0.4,0.6), align = "hv", axis = "lr", label_size = 22),
+                  plot_grid(corRecurr + theme(axis.title.y = element_text(vjust =0)),
+                             plotMeanBeta , ncol=1, labels = c("c","e"), rel_heights = c(5,5),align = "hv", axis = "lr", label_size = 22),
+          plot_grid(NULL, sigNumPlot,enMyc, plotCpG, ncol=1, labels = c("d","","f","g"), rel_heights = c(0.05,0.3,0.2,0.45), 
+                    align = "hv", label_size = 22),
+          ncol=3,rel_widths = c(1,0.9,1))
+pout
+#ggsave("figure3.pdf",height = 9, width = 16)
+```
+
+### Supplementary figures
+
+#### Associations between genomic variantions and LF4
+```{r genomics_LF, fig.height=16, fig.width=12}
+gridViolin <- plot_grid(plotlist = plotGeneViolin, ncol =3)
+pout <- ggdraw() +
+  draw_plot(plotGeneHeatmap, 0, 0.70, 1, 0.30) +
+  draw_plot(gridViolin, 0, 0 , 1, 0.69)
+pout
+```
+
+
+#### Associations between LF4 and mutation load
+```{r mutLoad_LF, fig.height=6, fig.width=12}
+plot_grid(corTotal.wes, corTotal.wgs,
+          labels = c("a","b"), label_size = 22)
+```
+

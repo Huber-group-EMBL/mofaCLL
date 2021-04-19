@@ -1,0 +1,1076 @@
+---
+title: 'Part 3: Validate CLL-PD in external, independent cohorts'
+output:
+  BiocStyle::html_document
+---
+
+```{r, message=FALSE, include=!exists(".standalone"), eval=!exists(".standalone")}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+#Libraries
+library(mofaCLL)
+library(glmnet)
+library(survival)
+library(maxstat)
+library(lubridate)
+library(survminer)
+library(gridExtra)
+library(limma)
+library(GEOquery)
+library(cowplot)
+library(DESeq2)
+library(tidyverse)
+```
+
+
+# Validate CLL-PD in external, independent cohorts
+
+## Test whether CLL-PD can be computed using single-omic dataset
+
+Load datasets
+```{r}
+data("mofaOut","gene")
+```
+
+Download methylation dataset from server to a temporary folder
+(The methylation data will be uploaded to ExperimentHub later)
+```{r,eval=TRUE}
+methPath <- file.path(tempdir(),"meth.RData")
+if(!file.exists(methPath)) {
+  download.file("https://www.huber.embl.de/users/jlu/data/meth.RData",
+                methPath)
+  load(methPath)
+} else {
+  load(methPath)
+}
+```
+
+Get values for LF4
+```{r}
+library(MOFA)
+facTab <- getFactors(
+  MOFAobject, 
+  factors = "LF4",
+  as.data.frame = TRUE
+) %>% as_tibble()
+trainData <- getTrainData(MOFAobject)
+#unload MOFA package
+detach("package:MOFA", unload = TRUE)
+```
+
+
+### Using gene expression dataset for predicting LF4
+
+Prepare model
+```{r, cache=TRUE}
+y <- structure(facTab$value, names = facTab$sample)
+X <- trainData[["mRNA"]]
+X <- X[,complete.cases(t(X))]
+sampleOverlap <- intersect(names(y), colnames(X))
+y <- y[sampleOverlap]
+X <- X[,sampleOverlap]
+
+#remove highly correlated features
+X <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)$reduced
+```
+
+Run regularised linear regression models
+```{r, cache=TRUE}
+set.seed(5862)
+rnaRes <- runGlm(X,y, repeats = 20, folds=5, method = "lasso", lambda ="lambda.1se", testRatio = 0.3)
+```
+
+Export select gene list from the best model
+```{r}
+coefMat <- rnaRes$coefMat
+coefTab <- tibble(id = rownames(coefMat),
+  coef = coefMat[,which.max(rnaRes$r2Test)]) %>%
+  filter(coef != 0) %>%
+  mutate(Symbol = sprintf("\textit{%s}",rowData(rna[id,])$symbol)) %>%
+  arrange(desc(abs(coef))) %>%
+  select(id, Symbol, coef)
+
+geneCoef <- coefTab %>% 
+  mutate(coef  = formatC(coef, digits=2)) %>%
+  dplyr::rename(`Ensembl gene ID` = id, 
+         Coefficient = coef)
+
+geneCoef
+```
+
+### Using methylation dataset for predicting LF4
+
+Prepare model
+```{r, cache=TRUE}
+y <- structure(facTab$value, names = facTab$sample)
+X <- trainData[["Methylation"]]
+X <- X[,complete.cases(t(X))]
+sampleOverlap <- intersect(names(y), colnames(X))
+y <- y[sampleOverlap]
+X <- X[,sampleOverlap]
+
+#remove highly correlated features
+X <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)$reduced
+```
+
+Run regularised linear regression models
+```{r, cache=TRUE}
+methRes <- runGlm(X,y, repeats = 20, folds=5, method = "lasso", lambda ="lambda.1se", testRatio = 0.3)
+```
+
+Export the select gene list from best model
+```{r}
+coefMat <- methRes$coefMat
+coefTab <- tibble(id = rownames(coefMat),
+  coef = coefMat[,which.max(methRes$r2Test)]) %>%
+  filter(coef != 0) %>%
+  arrange(desc(abs(coef))) %>%
+  select(id, coef)
+
+methCoef <- coefTab %>% 
+  mutate(coef  = formatC(coef, digits=2)) %>%
+  dplyr::rename(`Probe ID` = id, 
+         Coefficient = coef)
+
+methCoef
+```
+
+### Using drug responses
+
+Prepare model
+```{r, cache=TRUE}
+y <- structure(facTab$value, names = facTab$sample)
+X <- trainData[["Drugs"]]
+X <- X[,complete.cases(t(X))]
+sampleOverlap <- intersect(names(y), colnames(X))
+y <- y[sampleOverlap]
+X <- X[,sampleOverlap]
+
+#remove highly correlated features
+X <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)$reduced
+```
+
+Run glm model
+```{r, cache=TRUE, warning=FALSE}
+set.seed(5862)
+drugRes <- runGlm(X,y, repeats = 20, folds=5, method = "lasso", lambda ="lambda.1se", testRatio = 0.3)
+```
+
+### Using gene mutations
+
+Prepare model
+```{r, cache=TRUE}
+y <- structure(facTab$value, names = facTab$sample)
+X <- trainData[["Mutations"]]
+
+#fill the missing value with majority
+X <- apply(X, 1, function(x) {
+  xVec <- x
+  avgVal <- mean(x,na.rm= TRUE)
+  if (avgVal >= 0.5) {
+    xVec[is.na(xVec)] <- 1
+  } else xVec[is.na(xVec)] <- 0
+  xVec
+})
+
+sampleOverlap <- intersect(names(y), rownames(X))
+y <- y[sampleOverlap]
+X <- X[sampleOverlap,]
+```
+
+Run glm model
+```{r, cache=TRUE, warning=FALSE}
+set.seed(5862)
+geneRes <- runGlm(X,y, repeats = 20, folds=5, method = "lasso", lambda ="lambda.1se", testRatio = 0.3)
+```
+
+### Compare the prediction accuracy (variance explained for CLL-PD)
+
+Summarized variance explained
+```{r}
+plotTab <- tibble(r2 = rnaRes$r2Test, set = "mRNA") %>%
+  bind_rows(tibble(r2 = methRes$r2Test, set = "Methylation")) %>%
+  bind_rows(tibble(r2 = drugRes$r2Test, set = "Drugs")) %>%
+  bind_rows(tibble(r2 = geneRes$r2Test, set = "Mutations")) %>%
+  group_by(set) %>% summarise(meanR2 = mean(r2, na.rm = TRUE), sdR2 = sd(r2, na.rm = TRUE)) %>%
+  arrange(desc(meanR2)) %>% mutate(set = factor(set, levels = set))
+#write_csv(plotTab, "sourceData_2aUp.csv")
+```
+
+Summarize number of selected features
+```{r}
+featureNum <-  tibble(n = nFeature(rnaRes), set = "mRNA") %>%
+  bind_rows(tibble(n = nFeature(methRes), set = "Methylation")) %>%
+  bind_rows(tibble(n = nFeature(drugRes), set = "Drugs")) %>%
+  bind_rows(tibble(n = nFeature(geneRes), set = "Mutations")) %>%
+  group_by(set) %>% summarise(meanN = mean(n, na.rm = TRUE), sdN = sd(n, na.rm = TRUE)) %>%
+  mutate(set = factor(set, levels = levels(plotTab$set)))
+#write_csv(featureNum, "sourceData_2aDown.csv")
+```
+
+```{r,fig.height=6, fig.width=5}
+varExpBar <- ggplot(plotTab, aes(x=set, y = meanR2, fill = set)) + 
+  geom_col(width = 0.4) +
+  geom_errorbar(aes(ymin = meanR2 - sdR2, ymax = meanR2 + sdR2), width =0.2) +
+  ylim(0,1) + xlab("data set") + ylab(bquote('Variance explained ('*R^2*')')) +
+  scale_fill_manual(values = structure(colList[1:4],names = as.character(plotTab$set))) +
+  theme_full +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90, hjust =1, vjust =0.5))
+
+numBar <- ggplot(featureNum, aes(x=set, y = meanN)) + 
+  geom_point(size=3) +
+  geom_errorbar(aes(ymin = meanN - sdN, ymax = meanN + sdN), width =0.2) +
+  xlab("") + ylab("Number of features") +
+  theme_half + 
+  theme(legend.position = "none", panel.border = element_blank(), 
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.text.x = element_blank())
+
+varPlot <- plot_grid(varExpBar, numBar, align = "v", nrow =2, rel_heights = c(0.7,0.3))
+varPlot
+```
+
+## Estimate and test F4 (CLL-PD) in external cohorts using gene expression
+
+### ICGC-CLL cohort with RNAseq data (EGAS00001000374)
+
+#### Pre-processing data
+
+Download ICGC dataset from EMBL server
+(The raw sequencing, genomic and outcome data can be queried from ICGC portatl: https://icgc.org/icgc/cgp/64/530/826)
+```{r}
+icgcPath <- file.path(tempdir(),"rnaICGC.RData")
+if(!file.exists(icgcPath)) {
+  download.file("https://www.huber.embl.de/users/jlu/data/rnaICGC.RData",
+                icgcPath)
+  load(icgcPath)
+} else {
+  load(icgcPath)
+}
+```
+
+Load and process ICGC expression dataset
+```{r, cache=TRUE}
+rnaExt.vst <- varianceStabilizingTransformation(rnaExternal)
+
+#Adjusted for potential batch effect
+exprMat <- assay(rnaExt.vst)
+batch <- as.factor(rnaExt.vst$raw_data_accession)
+exprMat.combat <- sva::ComBat(exprMat, batch = batch)
+assay(rnaExt.vst) <- exprMat.combat
+```
+
+Load and process internal RNAseq dataset
+```{r, cache=TRUE}
+rna$factor <- facTab[match(colnames(rna), facTab$sample),]$value
+rna <- rna[,!is.na(rna$factor)] #use samples with LF4 values
+rna.vst <- varianceStabilizingTransformation(rna)
+```
+
+Filter out low variant genes in both datasets
+```{r}
+exprMat <- assay(rna.vst)
+exprMat.ext <- assay(rnaExt.vst)
+
+#icgc dataset
+sds <- genefilter::rowSds(exprMat.ext)
+exprMat.ext <- exprMat.ext[order(sds,decreasing = TRUE)[1:10000],]
+
+#internal dataset
+sds <- genefilter::rowSds(exprMat)
+exprMat <- exprMat[order(sds,decreasing = TRUE)[1:10000],]
+
+#subset to keep common genes
+overGene <- intersect(rownames(exprMat), rownames(exprMat.ext))
+exprMat <- exprMat[overGene,]
+exprMat.ext <- exprMat.ext[overGene,]
+```
+
+Remove highly correlated gene in training data
+```{r, cache=TRUE}
+X <- mscale(exprMat)
+#remove highly correlated genes
+reRes <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)
+X <- reRes$reduced
+```
+
+### Predict factor value in ICGC cohort
+
+Build linear model using in-house CLL dataset
+```{r, cache=TRUE}
+set.seed(5862)
+
+y <- rna.vst$factor
+modelTrain <- runGlm(X,y, method = "lasso", repeats=20, folds=5, lambda ="lambda.1se")
+useModel <- modelTrain$modelList[[which.max(modelTrain$r2Train)]] #choose the best model
+```
+
+Predict this factor in the new dataset
+```{r}
+newX <- exprMat.ext[colnames(X),]
+newX <- t(mscale(newX))
+y.pred <- glmnet:::predict.cv.glmnet(useModel,  newx = newX)[,1]
+y.pred <- (y.pred - mean(y.pred))/(2*sd(y.pred))
+dim(newX)
+```
+
+
+```{r,echo=FALSE, eval=FALSE}
+#save predicted values
+icgcTab <- tibble(id = names(y.pred), value = y.pred)
+```
+
+### Test assocation with clincial outcome
+
+Prepare outcome table based on patient annotations
+```{r}
+survT <- colData(rnaExternal) %>% data.frame(stringsAsFactors = FALSE) %>% 
+  rownames_to_column("sampleID") %>%
+  mutate(predLF = y.pred[sampleID]) %>% 
+  dplyr::select(sampleID, treatedAfter, TTT, predLF, OS, died) %>%
+  dplyr::rename(patientID = sampleID) %>%
+  filter(!(is.na(TTT) & is.na(OS))) #remove samples with none outcome avaialble
+
+#how many samples
+nrow(survT)
+```
+
+Prepare risk factor table
+```{r}
+riskTab <- colData(rnaExternal) %>% data.frame(stringsAsFactors = FALSE) %>% 
+  rownames_to_column("sampleID") %>%
+  dplyr::select(sampleID, IGHV, TP53, del17p,  age, sex, SF3B1, NOTCH1) %>%
+  mutate(`TP53.del17p` = TP53 | del17p, age = age/10) %>%
+  mutate_if(is.logical, as.numeric) %>%
+  select(-TP53, -del17p) %>%
+  dplyr::rename(patientID = sampleID) %>%
+  mutate(LF4 = y.pred[patientID], IGHV =as.factor(IGHV))
+
+```
+
+```{r}
+outTab <- left_join(riskTab, survT, by = "patientID")
+#write_csv2(outTab, "sourceData_2cdef.csv")
+#write_csv2(survT, "sourceData_2b_ICGC")
+```
+
+#### Univariate test
+
+Overall survival
+```{r,fig.height=6.5, fig.width=5}
+#calculate p value for cox regression
+pOS <- comSurv(survT$predLF, survT$OS, survT$died)
+kmOS <- km(survT$predLF, survT$OS, survT$died, "Overall survival (ICGC-CLL)",
+   stat = "maxstat",pval = pOS$p, showTable = TRUE)
+kmOS
+```
+
+Time to treatment
+```{r,fig.height=6.5, fig.width=5}
+pTTT <- comSurv(survT$predLF, survT$TTT, survT$treatedAfter)
+kmTTT <- km(survT$predLF, survT$TTT, survT$treatedAfter, "Time to treatment (ICGC-CLL)", stat = "maxstat", pval = pTTT$p, showTable = TRUE)
+kmTTT
+```
+
+Prepare a summary table
+```{r}
+sumOutcome <- bind_rows(mutate(pTTT, outcome = "TTT"),mutate(pOS,outcome = "OS")) %>% mutate(cohort = "ICGC-CLL", n=nrow(survT))
+```
+
+#### Combine IGHV and CLL-PD
+
+KM plot for subgroup defined by IGHV status and median latent factor values
+```{r, fig.height=6.5, fig.width=10}
+groupTab <- survT %>% mutate(IGHV = rnaExternal[,patientID]$IGHV) %>%
+  filter(!is.na(IGHV)) %>% 
+  mutate(group = ifelse(predLF > median(predLF),"highPD","lowPD")) %>%
+  mutate(subgroup = paste0(IGHV,"_",group))
+  
+groupList <- list()
+# TTT
+groupList[["TTT"]] <- km(groupTab$subgroup, groupTab$TTT, groupTab$treatedAfter, "Time to treatment (ICGC-CLL)", stat = "binary", showP = TRUE, showTable = TRUE, yLabelAdjust = -5)
+
+# OS
+groupList[["OS"]] <- km(groupTab$subgroup, groupTab$OS, groupTab$died, "Overall survival (ICGC-CLL)", stat = "binary", showP = TRUE, showTable = TRUE, yLabelAdjust = -5)
+
+grid.arrange(grobs = groupList, ncol = 2)
+```
+
+#### Multivariate test
+
+**OS**
+```{r, fig.height=8 ,fig.width=6}
+surv1 <- runCox(survT, dplyr::rename(riskTab, CLLPD= LF4), "OS", "died")
+
+summary(surv1)
+haOS <- plotHazard(surv1, title = "Overall survival (ICGC-CLL)") + 
+  scale_y_log10(limits = c(0.3,8))
+
+haOS
+```
+
+Time to treatment
+```{r, fig.height=8 ,fig.width=6}
+surv1 <- runCox(survT, dplyr::rename(riskTab, CLLPD = LF4), "TTT", "treatedAfter")
+
+summary(surv1)
+haTTT <- plotHazard(surv1, title = "Time to treatment (ICGC-CLL)") + 
+  scale_y_log10(limits = c(0.3,8))
+haTTT
+```
+
+
+#### Correlation between predicted CLL-PD and demographics
+
+Age
+```{r, fig.height=5, fig.width=5}
+plotTab <- riskTab %>%
+  mutate(C1C2 = paste0("C",rnaExternal[,match(patientID, colnames(rnaExternal))]$`C1C2`),
+         sex = ifelse(is.na(sex),NA, ifelse(sex =="f" , "Female","Male")))
+
+corRes <- cor.test(plotTab$age, plotTab$LF4)
+pval <- formatNum(corRes$p.value, digits = 1, format = "e")
+annoN <- sprintf("N = %s", nrow(filter(plotTab,!is.na(age))))
+annoP <- bquote(italic("P")~"="~.(pval))
+annoCoef <- sprintf("coefficient = %1.2f",corRes$estimate)
+
+plotAge <- ggplot(plotTab, aes(x = age, y = LF4)) + 
+  geom_point(color =colList[3]) + 
+  geom_smooth(method = "lm", se=FALSE, color = "grey50", linetype ="dashed" ) + 
+  annotate("text", x = max(plotTab$age), y = Inf, label = annoN,
+           hjust=1, vjust =1.5, size = 5, parse = FALSE, col= colList[1]) +
+  annotate("text", x = max(plotTab$age), y = Inf, label = annoP,
+           hjust=1, vjust =3.5, size = 5, parse = FALSE, col= colList[1]) +
+  annotate("text", x = max(plotTab$age), y = Inf, label = annoCoef,
+           hjust=1, vjust =5.5, size = 5, parse = FALSE, col= colList[1]) +
+  ylab("predicted CLL-PD") + xlab("Age (years)") +
+  theme_full
+plotAge
+```
+
+
+Sex
+```{r, fig.height=5, fig.width=5}
+corRes <- t.test(LF4 ~ sex, plotTab)
+pval <- formatNum(corRes$p.value, digits = 1, format = "e")
+annoP <- bquote(italic("P")~"="~.(pval))
+
+plotTab <- group_by(plotTab, sex) %>% mutate(n=n()) %>% ungroup() %>%
+  mutate(sex = sprintf("%s\n(N=%s)",sex,n))
+
+plotSex <- ggplot(plotTab, aes(x = sex, y = LF4)) + 
+  geom_violin(aes(fill = sex)) +
+  geom_point() + 
+  annotate("text", x = Inf, y = Inf, label = annoP,
+           hjust=1.2, vjust =2, size = 5, parse = FALSE, col= colList[1]) +
+  scale_fill_manual(values = colList) +
+  ylab("predicted CLL-PD") + xlab("Sex") +
+  theme_full + theme(legend.position = "none")
+plotSex
+```
+
+Plot C1/C2
+```{r, fig.height=5, fig.width=5}
+plotTab <- filter(plotTab, C1C2 != "CNA")
+corRes <- t.test(LF4 ~ C1C2, plotTab)
+pval <- formatNum(corRes$p.value, digits = 1, format = "e")
+annoP <- bquote(italic("P")~"="~.(pval))
+
+plotTab <- filter(plotTab, !is.na(C1C2)) %>%
+  group_by(C1C2) %>% mutate(n=n()) %>% ungroup() %>%
+  mutate(C1C2 = sprintf("%s\n(N=%s)",C1C2,n))
+
+plotC1C2 <- ggplot(filter(plotTab,!is.na(C1C2)), aes(x = C1C2, y = LF4)) + 
+  geom_violin(aes(fill = C1C2)) +
+  geom_point() + 
+  annotate("text", x = Inf, y = Inf, label = annoP,
+           hjust=1.1, vjust =2, size = 5, parse = FALSE, col= colList[1]) +
+  scale_fill_manual(values = colList[3:length(colList)]) +
+  ylab("predicted CLL-PD") + xlab("C1/C2 group") +
+  theme_full + theme(legend.position = "none")
+plotC1C2
+```
+
+
+
+### Association with genomics
+
+```{r}
+#t-test
+y <- y.pred
+geneICGC <- geneICGC[names(y),]
+tRes <- apply(geneICGC, 2, function(x) {
+  res <- t.test(y ~ as.factor(x), var.equal = TRUE)
+  data.frame(p = res$p.value, 
+             df = res$estimate[[2]] - res$estimate[[1]])
+}) %>% bind_rows() %>% mutate(gene = colnames(geneICGC),
+                              p.adj = p.adjust(p, method = "BH")) %>%
+  arrange(p)
+filter(tRes, p.adj <0.05) %>% mutate_if(is.numeric, formatNum, digits =3, format = "e") %>% DT::datatable()
+```
+
+```{r, fig.height=5, fig.width=5}
+plotGeneVolcano <- plotVolcano(tRes, posCol = colList[1], negCol = colList[2],
+            x_lab = "Difference of mean", ifLabel = TRUE) + 
+  theme(legend.position = "none",
+        plot.margin = margin(8,8,8,8),
+        axis.title.y = element_text(vjust=0))
+plotGeneVolcano
+```
+
+### Assocation with mutation load
+```{r, fig.height=5, fig.width=5}
+plotTab <- tibble(value = y.pred,load=rnaExternal[,names(y.pred)]$mutationLoad) %>%
+  filter(!is.na(load))
+
+corRes <- cor.test(plotTab$load, plotTab$value)
+pval <- formatNum(corRes$p.value, digits = 1, format = "e")
+annoN <- sprintf("N = %s", nrow(plotTab))
+annoP <- bquote(italic("P")~"="~.(pval))
+annoCoef <- sprintf("coefficient = %1.2f",corRes$estimate)
+
+plotMut <- ggplot(plotTab, aes(x = load, y = value)) + 
+  geom_point(color =colList[6]) + 
+  geom_smooth(method = "lm", se=FALSE, color = "grey50", linetype ="dashed" ) + 
+  annotate("text", x = max(plotTab$load), y = Inf, label = annoN,
+           hjust=1, vjust =1.5, size = 5, parse = FALSE, col= colList[1]) +
+  annotate("text", x = max(plotTab$load), y = Inf, label = annoP,
+           hjust=1, vjust =3.5, size = 5, parse = FALSE, col= colList[1]) +
+  annotate("text", x = max(plotTab$load), y = Inf, label = annoCoef,
+           hjust=1, vjust =5.5, size = 5, parse = FALSE, col= colList[1]) +
+  ylab("predicted CLL-PD") + xlab("Number of somatic mutations detected by WGS") +
+  theme_full
+plotMut
+```
+
+
+### Enrichment analysis
+
+```{r, fig.height=8, fig.width=6}
+highSet <- c("MYC_TARGETS_V1", "MYC_TARGETS_V2", "MTORC1_SIGNALING","OXIDATIVE_PHOSPHORYLATION")
+gmts = list(H = system.file("externalData/h.all.v6.2.symbols.gmt", package = "mofaCLL"))
+designMat <- model.matrix(~ 1 + y.pred)
+enrichRes <- runCamera(assay(rnaExt.vst[,names(y.pred)]), designMat, gmts$H, 
+                       id = rowData(rnaExt.vst)$symbol, 
+                       method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "ICGC-CLL cohort (Hallmarks, 5% FDR)", 
+                       setToHighlight = highSet)
+enrichICGC <- enrichRes$enrichPlot
+enrichICGC
+```
+
+
+## Three external cohorts with microarray data
+
+### Query data from GEO and format datasets
+
+A list object to store external data
+```{r}
+gseList <- list()
+```
+
+#### GSE22762 (Munic cohort)
+
+An eight-gene expression signature for the prediction of survival and time to treatment in chronic lymphocytic leukemia
+```{r,  warning=FALSE, message=FALSE, cache=TRUE}
+gse.all <- getGEO("GSE22762", GSEMatrix = TRUE)
+gse <- gse.all[[1]]
+gse$patID <- sapply(str_split(gse$title,"[_ ]"), function(x) x[4])
+colnames(gse) <- gse$patID
+
+exprs(gse) <- log2(exprs((gse)))
+
+#only keep genes with entrenz ID presented in internal dataset
+gse <- gse[!fData(gse)$ENTREZ_GENE_ID %in% c("",NA)]
+gse <- gse[fData(gse)$ENTREZ_GENE_ID %in% rowData(rna)$entrezgene]
+
+
+#reorder the expression matrix, so when subsetting on genes and there are multiple mapings, always put higher variant genes on top
+sdsNew <- genefilter::rowSds(exprs(gse))
+gse <- gse[order(sdsNew, decreasing = TRUE),]
+
+
+gseList[["GSE22762"]] <- gse
+```
+
+
+
+#### GSE39671 (UCSD cohort)
+
+Expression data from untreated CLL patients
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+gse <- getGEO("GSE39671", GSEMatrix = TRUE)
+gse <- gse[[1]]
+exprs(gse) <- log2(exprs((gse)))
+
+#only keep genes with entrenz ID presented in internal dataset
+gse <- gse[!fData(gse)$ENTREZ_GENE_ID %in% c("",NA)]
+gse <- gse[fData(gse)$ENTREZ_GENE_ID %in% rowData(rna)$entrezgene]
+
+#reorder the expression matrix, so when subsetting on genes and there are multiple mapings, always put higher variant genes on top
+sdsNew <- genefilter::rowSds(exprs(gse))
+gse <- gse[order(sdsNew, decreasing = TRUE),]
+
+gseList[["GSE39671"]] <- gse
+```
+
+
+#### GSE10138 (Duke cohort)
+
+A Genomic Approach to Improve Prognosis and Predict Therapeutic Response in Chronic Lymphocytic Leukemia (Duke_VA)
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+gse <- getGEO("GSE10138", GSEMatrix = TRUE)
+gse <- gse[[1]]
+
+patID <- sapply(str_split(gse$title," "),function(x) x[3])
+patID <- sapply(str_split(patID,"-"),function(x) x[1])
+gse$patID <- patID
+gse <- gse[,!duplicated(gse$patID)]
+exprs(gse) <- log2(limma::normalizeVSN(gse)) #the raw microarray was stored. Normalization needs to be performed first.
+
+#only keep genes with entrenz ID presented in internal dataset
+gse <- gse[fData(gse)$ENTREZ_GENE_ID %in% rowData(rna)$entrezgene]
+
+
+#reorder the expression matrix, so when subsetting on genes and there are multiple mapings, always put higher variant genes on top
+sdsNew <- genefilter::rowSds(exprs(gse))
+gse <- gse[order(sdsNew, decreasing = TRUE),]
+
+
+patAnno <- tibble(sampleID = colnames(gse),
+                  type = gse$source_name_ch1)
+
+#the object dose not have patient annotation, the clinical outcome data is obtained from the publication: PMID: 19861443
+annoPath <- system.file("externalData/GSE10138_patAnno.csv", package = "mofaCLL")
+
+csvAnno <- read.csv2(annoPath, stringsAsFactors = FALSE) %>%
+  dplyr::select(Group, TTT..years., Rx) %>%
+  rename(TTT = TTT..years., treatedAfter = Rx) %>%
+  filter(!is.na(TTT)) %>% 
+  mutate(treatedAfter = ifelse(treatedAfter == "Y ",TRUE,FALSE),
+         sampleID = colnames(gse)) %>%
+  as_tibble() 
+
+patAnno <- left_join(patAnno, csvAnno)
+
+gseList[["GSE10138"]] <- list(gse = gse, patAnno = patAnno)
+```
+
+### Test associations with outcomes
+
+#### Munic cohort (GSE22762)
+
+##### Preprocessing
+
+Filter out low variant genes in both datasets
+```{r, cache=TRUE}
+gse <- gseList$GSE22762
+
+#internal dataset
+rnaSub <- rna.vst[! rowData(rna.vst)$entrezgene %in% c("",NA),]
+exprMat <- assay(rnaSub)
+sds <- genefilter::rowSds(exprMat)
+rnaSub <- rnaSub[order(sds, decreasing = T)[1:10000],]
+
+#external
+gseMat <- exprs(gse)
+sds <- genefilter::rowSds(gseMat)
+gseSub <- gse[order(sds, decreasing = T)[1:10000],] #top variatne genes
+
+#subset for common genes
+commonGene <- intersect(fData(gseSub)$ENTREZ_GENE_ID, rowData(rnaSub)$entrezgene)
+gseSub <- gseSub[match(commonGene,fData(gseSub)$ENTREZ_GENE_ID),]
+rownames(gseSub) <- rownames(rnaSub[match(commonGene, rowData(rnaSub)$entrezgene),])
+
+#get expression matrix
+gseMat <- exprs(gseSub)
+exprMat <- assay(rnaSub)[rownames(gseMat),]
+```
+
+##### Model trainning
+
+Remove highly correlated features in the training set
+```{r, cache=TRUE}
+X <- mscale(exprMat)
+reRes <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)
+X <- reRes$reduced
+```
+
+```{r, cache=TRUE}
+set.seed(5862)
+y <- rna.vst$factor
+lassoRes <- runGlm(X,y, method = "lasso", repeats=20, folds=5, lambda ="lambda.1se")
+useModel <- lassoRes$modelList[[which.max(lassoRes$r2Train)]]
+```
+
+##### Predict CLL-PD
+
+Input matrix from new dataset
+```{r}
+newX <- gseMat[colnames(X),]
+newX <- t(mscale(newX)) 
+#dimension of test set
+dim(newX)
+```
+
+Predict factor using the best model
+```{r}
+y.pred <- glmnet:::predict.cv.glmnet(useModel, newx = newX)[,1]
+y.pred <- (y.pred - mean(y.pred))/(2*sd(y.pred))
+```
+
+##### Association with outcomes
+```{r, fig.width=5, fig.height=4}
+pTab <- pData(gse)
+patAnno <- tibble(sampleID = rownames(pTab),
+                  TTT = as.numeric(pTab$`time to treatment (days):ch1`)/365,
+                  treatedAfter = pTab$`treatment status (censoring day):ch1`,
+                  OS = as.numeric(pTab$`overall survival (days):ch1`)/365,
+                  died = pTab$`life status (censoring day):ch1`) %>%
+  mutate(treatedAfter = as.logical(as.numeric(treatedAfter)),
+         died = as.logical(as.numeric(died)))
+
+
+plotTab <- tibble(sampleID = names(y.pred), factor = y.pred) %>%
+  left_join(patAnno, by = "sampleID")
+
+#write_csv2(plotTab, "sourceData_2bMunich.csv")
+```
+
+Factor vs TTT (cox regression)
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+pTTT <- comSurv(plotTab$factor, plotTab$TTT, plotTab$treatedAfter)
+```
+
+Factor vs OS (cox regression)
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+pOS <- comSurv(plotTab$factor, plotTab$OS, plotTab$died)
+```
+
+Add to summary table
+```{r}
+sumOutcome <- mutate(bind_rows(mutate(pTTT, outcome = "TTT"),mutate(pOS,outcome = "OS")),cohort = "Munich",n = nrow(plotTab)) %>% bind_rows(sumOutcome)
+```
+
+KM plots
+```{r, fig.width=5, fig.height=6.5}
+kmTTT_m1 <- km(plotTab$factor, plotTab$TTT, plotTab$treatedAfter, stat = "maxstat", pval = pTTT$p,  
+   titlePlot = "Time to treatment (Munich, GSE22762)", showTable = TRUE)
+
+kmOS_m1 <- km(plotTab$factor, plotTab$OS, plotTab$died, stat = "maxstat", pval =pOS$p,
+   titlePlot = "Overall survival (Munich, GSE22762)", showTable = TRUE)
+kmOS_m1
+kmTTT_m1
+```
+
+#### Enrichment analysis
+
+```{r, fig.height=8, fig.width=10}
+highSet <- c("MYC_TARGETS_V1", "MYC_TARGETS_V2", "MTORC1_SIGNALING","OXIDATIVE_PHOSPHORYLATION")
+gmts = list(H = system.file("externalData/h.all.v6.2.symbols.gmt", package = "mofaCLL"))
+designMat <- model.matrix(~ 1 + y.pred)
+enrichRes <- runCamera(exprs(gse), designMat, gmts$H, 
+                       id =fData(gse)$`Gene Symbol`, 
+                       method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "Munich cohort (Hallmarks, 5% FDR)", 
+                       setToHighlight = highSet)
+enrichMunich <- enrichRes$enrichPlot
+enrichMunich
+```
+
+
+#### UCSD cohort (GSE39671)
+
+##### Preprocessing
+
+```{r, cache=TRUE}
+gse <- gseList[["GSE39671"]]
+
+#internal dataset
+rnaSub <- rna.vst[! rowData(rna.vst)$entrezgene %in% c("",NA),]
+exprMat <- assay(rnaSub)
+sds <- genefilter::rowSds(exprMat)
+rnaSub <- rnaSub[order(sds, decreasing = T)[1:10000],]
+
+#external
+gseMat <- exprs(gse)
+sds <- genefilter::rowSds(gseMat)
+gseSub <- gse[order(sds, decreasing = T)[1:10000],] #top variatne genes
+
+#subset for common genes
+commonGene <- intersect(fData(gseSub)$ENTREZ_GENE_ID, rowData(rnaSub)$entrezgene)
+gseSub <- gseSub[match(commonGene,fData(gseSub)$ENTREZ_GENE_ID),]
+rownames(gseSub) <- rownames(rnaSub[match(commonGene, rowData(rnaSub)$entrezgene),])
+
+#get expression matrix
+gseMat <- exprs(gseSub)
+exprMat <- assay(rnaSub)[rownames(gseMat),]
+```
+
+
+##### Model training
+
+Remove highly correlated features
+```{r, cache=TRUE}
+X <- mscale(exprMat)
+#remove highly correlated genes
+reRes <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)
+X <- reRes$reduced
+```
+
+```{r, cache=TRUE}
+set.seed(5862)
+y <- rna.vst$factor
+lassoRes <- runGlm(X,y, method = "lasso", repeats=20, folds=5, lambda ="lambda.1se")
+useModel <- lassoRes$modelList[[which.max(lassoRes$r2Train)]]
+```
+
+##### Predict CLL-PD
+
+Input matrix from new dataset
+```{r}
+newX <- gseMat[colnames(X),]
+newX <- t(mscale(newX)) 
+#dimension of test set
+dim(newX)
+```
+
+Predict factor using the best model
+```{r}
+y.pred <- glmnet:::predict.cv.glmnet(useModel, newx = newX)[,1]
+y.pred <- (y.pred - mean(y.pred))/(2*sd(y.pred))
+```
+
+
+##### Association with outcome
+```{r, fig.width=5, fig.height=4}
+patAnno <- tibble(sampleID = colnames(gse),
+                  TTT = as.numeric(gse$`sampling time to first treatment (years):ch1`),
+                  treatedAfter = gse$`treatment event (1:ch1`) %>%
+  separate(treatedAfter, c("a","b","treatedAfter"),":") %>%
+  mutate(treatedAfter = as.logical(as.numeric(treatedAfter))) %>%
+  dplyr::select(sampleID, TTT, treatedAfter)
+
+
+plotTab <- tibble(sampleID = names(y.pred), factor = y.pred) %>%
+  left_join(patAnno, by = "sampleID")
+
+#write_csv2(plotTab, "sourceData_2bUCSD.csv")
+```
+
+Factor vs TTT (cox regression)
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+pTTT <- comSurv(plotTab$factor, plotTab$TTT, plotTab$treatedAfter)
+```
+
+Add to summary table
+```{r}
+sumOutcome <- mutate(pTTT, outcome = "TTT", cohort = "UCSD",n=nrow(plotTab)) %>% bind_rows(sumOutcome)
+```
+
+KM plots
+```{r, fig.width=5, fig.height=6.5}
+kmTTT_m2 <- km(plotTab$factor, plotTab$TTT, plotTab$treatedAfter, stat = "maxstat", pval = pTTT$p,  
+   titlePlot = "Time to treatment (UCSD, GSE39671)", showTable = TRUE)
+
+kmTTT_m2
+```
+
+##### Enrichment
+
+```{r, fig.height=8, fig.width=10}
+highSet <- c("MYC_TARGETS_V1", "MYC_TARGETS_V2", "MTORC1_SIGNALING","OXIDATIVE_PHOSPHORYLATION")
+gmts = list(H = system.file("externalData/h.all.v6.2.symbols.gmt", package = "mofaCLL"))
+designMat <- model.matrix(~ 1 + y.pred)
+enrichRes <- runCamera(exprs(gse), designMat, gmts$H, 
+                       id =fData(gse)$`Gene Symbol`, 
+                       method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "UCSD cohort (Hallmarks, 5% FDR)", 
+                       setToHighlight = highSet)
+enrichUCSD <- enrichRes$enrichPlot
+enrichUCSD
+```
+
+#### Duke cohort (GSE10138)
+
+##### Preprocessing 
+```{r, cache=TRUE}
+gse <- gseList$GSE10138$gse
+patAnno <- gseList$GSE10138$patAnno
+
+#internal dataset
+rnaSub <- rna.vst[! rowData(rna.vst)$entrezgene %in% c("",NA),]
+exprMat <- assay(rnaSub)
+sds <- genefilter::rowSds(exprMat)
+rnaSub <- rnaSub[order(sds, decreasing = T)[1:10000],]
+
+#external
+gseMat <- exprs(gse)
+sds <- genefilter::rowSds(gseMat)
+gseSub <- gse[order(sds, decreasing = T)[1:10000],] #top variatne genes
+
+#subset for common genes
+commonGene <- intersect(fData(gseSub)$ENTREZ_GENE_ID, rowData(rnaSub)$entrezgene)
+gseSub <- gseSub[match(commonGene,fData(gseSub)$ENTREZ_GENE_ID),]
+rownames(gseSub) <- rownames(rnaSub[match(commonGene, rowData(rnaSub)$entrezgene),])
+
+#get expression matrix
+gseMat <- exprs(gseSub)
+exprMat <- assay(rnaSub)[rownames(gseMat),]
+```
+
+##### Model training
+
+Remove highly correlated features
+```{r, cache=TRUE}
+X <- t(mscale(exprMat))
+reRes <- removeCorrelated(X, cutoff = 0.9, method = "pearson", record = FALSE)
+X <- reRes$reduced
+```
+
+```{r, cache=TRUE}
+set.seed(5862)
+y <- rna.vst$factor
+
+lassoRes <- runGlm(X,y, method = "lasso", repeats=20, folds=5, lambda ="lambda.1se")
+useModel <- lassoRes$modelList[[which.max(lassoRes$r2Train)]]
+```
+
+
+##### Predict CLL-PD
+
+```{r}
+newX <- t(mscale(gseMat[colnames(X),]))
+#dimension of test set
+dim(newX)
+```
+
+Predict factor using the best model
+```{r}
+y.pred <- glmnet:::predict.cv.glmnet(useModel, newx = newX)[,1]
+y.pred <- (y.pred - mean(y.pred))/(2*sd(y.pred))
+```
+
+
+##### Association with outcome
+
+```{r, fig.width=5, fig.height=4}
+plotTab <- tibble(sampleID = names(y.pred), factor = y.pred) %>%
+  left_join(patAnno, by = "sampleID")
+
+#write_csv2(plotTab, "sourceData_2bDUKE.csv")
+```
+
+Factor vs TTT (cox regression)
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+pTTT <- comSurv(plotTab$factor, plotTab$TTT, plotTab$treatedAfter)
+```
+
+Add information to summary table
+```{r}
+sumOutcome <- mutate(pTTT, outcome = "TTT", cohort = "Duke",n=nrow(plotTab)) %>% 
+  bind_rows(sumOutcome)
+```
+
+
+KM plots
+```{r, fig.width=5, fig.height=6.5}
+kmTTT_m3 <- km(plotTab$factor, plotTab$TTT, plotTab$treatedAfter, stat = "maxstat", pval =pTTT$p,  
+   titlePlot = "Time to treatment (Duke, GSE10138)", showTable = TRUE)
+
+kmTTT_m3
+```
+
+##### Enrichment
+
+```{r, fig.height=8, fig.width=10}
+highSet <- c("MYC_TARGETS_V1", "MYC_TARGETS_V2", "MTORC1_SIGNALING","OXIDATIVE_PHOSPHORYLATION")
+gmts = list(H = system.file("externalData/h.all.v6.2.symbols.gmt", package = "mofaCLL"))
+designMat <- model.matrix(~ 1 + y.pred)
+enrichRes <- runCamera(exprs(gse), designMat, gmts$H, 
+                       id =fData(gse)$`Gene Symbol`, 
+                       method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "Duke cohort (Hallmarks, 5% FDR)", 
+                       setToHighlight = highSet)
+enrichDuke <- enrichRes$enrichPlot
+enrichDuke
+```
+
+
+## Summarization plot of p-values and hazzard ratios in external cohorts
+
+```{r, fig.width=6, fig.height=6}
+plotTab <- sumOutcome %>%
+  mutate(cohort = sprintf("%s\n(n=%s)",cohort,n)) %>%
+  mutate(cohort = factor(cohort, levels = unique(cohort)))
+
+
+haSumPlot <- ggplot(plotTab, aes(x=cohort, y = HR, col = outcome, dodge = outcome)) + 
+  geom_hline(yintercept = 1, linetype = "dotted") +
+  geom_point(position = position_dodge(width=0.8)) +
+  geom_errorbar(position = position_dodge(width =0.8), 
+                aes(ymin = lower, ymax = higher), width = 0.3, size=1) + 
+  geom_text(position = position_dodge2(width = 0.8),
+            aes(x=as.numeric(as.factor(cohort))+0.15, 
+                label = sprintf("italic(P)~'=%s'",formatNum(p, digits = 1, format = "e"))),
+            color = "black",size =5, parse = TRUE) +
+  xlab("Cohorts") + ylab("Hazard ratio") +
+  scale_y_log10(limits = c(0.3,11)) +
+  coord_flip() + theme_full + theme(legend.title = element_blank(),
+                                    legend.position = c(0.2,0.1),
+                                    legend.background = element_blank(),
+                                    legend.key.size = unit(0.5,"cm"),
+                                    legend.key.width = unit(0.6,"cm"),
+                                    legend.text = element_text(size=rel(1.2))) +
+  scale_color_manual(values = c(OS = colList[3], TTT = colList[5])) 
+
+haSumPlot
+```
+
+
+
+## Arrange plots for Section 2 in the manuscript
+
+### Main figure 2
+```{r figure2, fig.height=12, fig.width=13}
+title = ggdraw() + draw_figure_label("Figure 2", fontface = "bold", position = "top.left",size=22)
+
+pout <- ggdraw() +
+  draw_plot(varPlot, 0.02, 0.5, 0.22, 0.5) +
+  draw_plot(groupList[["TTT"]], 0.25, 0.5 , 0.36, 0.5) +
+  draw_plot(groupList[["OS"]], 0.64, 0.5, 0.36, 0.5) +
+  draw_plot(haSumPlot, 0, 0, 0.32, 0.465) +
+  draw_plot(haTTT, 0.33, 0, 0.30, 0.48) +
+  draw_plot(haOS, 0.66, 0, 0.30, 0.48) +
+  draw_plot_label(c("a", "b", "c", "d","e","f"), 
+                  c(0, 0, 0.33, 0.66, 0.33, 0.65), c(1, 0.5, 1, 1, 0.5,0.5), size = 20)
+plot_grid(title, pout, rel_heights = c(0.05,0.95), ncol = 1)
+```
+
+### Supplementary figure for KM-plots
+```{r external_microarray, fig.height=17, fig.width=10}
+plot_grid(kmTTT, kmOS, kmTTT_m1, kmOS_m1, kmTTT_m2, kmTTT_m3, nrow =3, labels = "AUTO")
+```
+
+### Supplementary figure for the assocations between predicted CLL-PD and demographics in ICGC cohort
+```{r LF4_ageSex_ICGC, fig.width=12, fig.height=6}
+plot_grid(plotAge,plotSex,nrow=1)
+```
+
+### Supplementary figure for the associations between predicted CLL-PD and genomics in ICGC cohort
+```{r LF4_genetics_ICGC, fig.width=13, fig.height=6}
+plot_grid(plotGeneVolcano, NULL, plotMut,rel_widths = c(1,0.1,1), nrow =1, align = "hv")
+```
+
+### Supplementary figure for the enrichment analysis in ICGC cohort
+```{r, enrich_ICGC, fig.height=6, fig.width=8}
+enrichICGC
+```
+
+
+### Supplementary figure for the enrichment analysis in four external cohorts
+```{r, enrich_AllFour, fig.height=12, fig.width=18}
+plot_grid(enrichICGC, enrichMunich, enrichUCSD, enrichDuke, ncol=2,
+          align = "hv", axis = "l")
+```

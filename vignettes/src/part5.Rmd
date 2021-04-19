@@ -1,0 +1,999 @@
+---
+title: 'Part 5: Pathway and functional changes related to F4 (CLL-PD)'
+output:
+  BiocStyle::html_document
+---
+
+```{r, message=FALSE, include=!exists(".standalone"), eval=!exists(".standalone")}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+#Libraries
+library(mofaCLL)
+library(gridExtra)
+library(ggrepel)
+library(genefilter)
+library(limma)
+library(ggbeeswarm)
+library(GEOquery)
+library(fgsea)
+library(pheatmap)
+library(tidygraph)
+library(igraph)
+library(ggraph)
+library(ComplexHeatmap)
+library(grid)
+library(cowplot)
+library(DESeq2)
+library(tidyverse)
+```
+
+
+# Gene expression signatures for CLL-PD (F4)
+
+Load datasets
+```{r}
+data("mofaOut","gene","drug","validateScreen","rna","seahorse","protein","mito")
+gmts = list(H = system.file("externalData/h.all.v6.2.symbols.gmt", package = "mofaCLL"))
+setMap <- read_tsv(system.file("externalData/setToPathway.txt", package = "mofaCLL"), col_types = "cc")
+mitoProtList <- readxl::read_xls(system.file("externalData/Human.MitoCarta3.0.xls", package = "mofaCLL"), 
+                                 sheet = 2)$Symbol
+
+```
+
+Process MOFA model
+```{r}
+library(MOFA)
+#get factor values
+facTab <- getFactors(
+  MOFAobject, 
+  factors = "LF4",
+  as.data.frame = TRUE
+) %>% as_tibble()
+
+#get all factors
+facTab.all <- getFactors(
+  MOFAobject,
+  factors = "all",
+  as.data.frame = TRUE
+) %>% as_tibble()
+
+#get weights
+weightTab <- getWeights(
+  MOFAobject,
+  factors = "all",
+  as.data.frame = TRUE
+) %>% as_tibble() %>%
+  mutate(feature = ifelse(feature == "IGHV.status", "IGHV", feature))
+#get training data
+trainData <- getTrainData(MOFAobject)
+
+detach("package:MOFA", unload = TRUE) #detach MOFA because it's "predict" function marks the "predict" function in glmnet
+```
+
+## Pre-processing data
+
+Processing RNAseq data
+```{r, cache=TRUE}
+dds<-estimateSizeFactors(rna)
+dds$factor <- facTab[match(dds$PatID, facTab$sample),]$value
+dds$IGHV <- gene[match(dds$PatID, rownames(gene)),]$IGHV
+ddsSub <- dds[,!is.na(dds$factor)]
+
+#vst
+ddsSub.vst <- varianceStabilizingTransformation(ddsSub)
+
+#seperate M-CLL and U-CLL
+ddsM.vst <- ddsSub.vst[,ddsSub.vst$IGHV %in% 1]
+ddsU.vst <- ddsSub.vst[,ddsSub.vst$IGHV %in% 0]
+```
+
+
+## Identify genes associated with CLL-PD
+
+Correlation test using DESeq2
+```{r, cache=TRUE}
+factorMatrix <- facTab.all %>% spread(key = factor, value = value) %>%
+  data.frame() %>% column_to_rownames("sample") 
+factorMatrix <- factorMatrix[colnames(ddsSub),]
+
+designMat <- model.matrix(~1 +.,factorMatrix)
+deRes <- DESeq(ddsSub, full = designMat, betaPrior = FALSE)
+
+
+corRes.rna <- results(deRes, name = "LF4", tidy = TRUE) %>%
+  mutate(symbol = rowData(ddsSub)[row,]$symbol) %>%
+  dplyr::rename(logFC = log2FoldChange, t = stat, P.Value = pvalue, adj.P.Val = padj,id=row)
+```
+
+
+**P value histogram**
+```{r}
+pHis <- ggplot(corRes.rna, aes(x=P.Value)) + geom_histogram(col="black",fill = colList[2],alpha=0.5) +
+  xlab("P value") + ylab("Count") + ggtitle("P value histogram") +
+  theme_full
+pHis
+```
+
+
+**Heatmap of significantly correalted genes (1% FDR)**
+```{r LF4_allGenes, fig.width=10, fig.height=10}
+corRes.sig <- filter(corRes.rna, adj.P.Val < 0.01)
+exprMat <- assay(ddsSub.vst)
+plotMat <- exprMat[corRes.sig$id,]
+plotMat <- plotMat[order(corRes.sig$logFC, decreasing = TRUE),order(designMat[,"LF4"])]
+
+colAnno <- data.frame(row.names = colnames(exprMat),
+                      LF4 = designMat[,"LF4"])
+colnames(colAnno) <- c("CLL-PD")
+plotMat <- mscale(plotMat, censor = 4)
+
+breaks <- seq(-4,4,length.out = 100)
+
+rnaHeatmap <- pheatmap(plotMat, scale = "none", cluster_cols = FALSE, cluster_rows = FALSE,
+         annotation_col = colAnno,
+         color = colorRampPalette(c(colList[2],"white",colList[1]))(length(breaks)),
+         breaks = breaks,
+         show_rownames = FALSE, show_colnames = FALSE, silent = TRUE)$gtable
+plot_grid(rnaHeatmap)
+```
+
+
+How many genes show significant correlation?
+```{r}
+nrow(corRes.sig)
+
+#percentage
+nrow(corRes.sig)/nrow(ddsSub)
+```
+
+How many genes show up-regulation?
+```{r}
+nrow(filter(corRes.sig, t>0))
+```
+
+## Gene enrichment analysis
+
+### Enrichment using Hallmark genesets for all CLLs
+```{r, fig.height=6, fig.width=8}
+enrichRes <- runCamera(exprMat, designMat, gmts$H, 
+                       id = rowData(ddsSub.vst[rownames(exprMat),])$symbol, contrast = 5, #LF4
+                       method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "Pathway enrichment on RNA level (5% FDR)", insideLegend = TRUE, setMap = setMap)
+rnaEnrichHallmark <- enrichRes$enrichPlot + theme(legend.position = c(0.8,0.2))
+rnaEnrichHallmark
+
+#write_csv2(as_tibble(enrichRes$enrichTab,rownames = "set"), "sourceData_4a.csv")
+```
+
+
+### Enrichment using Hallmark genesets for U-CLLs
+```{r, fig.height=6, fig.width=8}
+exprMat.U <- assay(ddsU.vst)
+designMat.U <- designMat[colnames(exprMat.U),]
+enrichRes.U <- runCamera(exprMat.U, designMat.U, gmts$H, 
+                       id = rowData(ddsSub.vst[rownames(exprMat.U),])$symbol, contrast = 5, #LF4
+                       method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "Hallmarks (U-CLL, 5% FDR)")
+plotEnrichHallmark.U <- enrichRes.U$enrichPlot
+plotEnrichHallmark.U
+```
+
+### Enrichment using Hallmark genesets for M-CLLs
+```{r, fig.height=6, fig.width=8}
+exprMat.M <- assay(ddsM.vst)
+designMat.M <- designMat[colnames(exprMat.M),]
+enrichRes.M <- runCamera(exprMat.M, designMat.M, gmts$H, 
+                       id = rowData(ddsSub.vst[rownames(exprMat.M),])$symbol, contrast = 5, #LF4
+                       method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "Hallmarks (M-CLL, 5% FDR)")
+plotEnrichHallmark.M <- enrichRes.M$enrichPlot
+plotEnrichHallmark.M
+```
+
+### Heatmap for enriched genesets
+
+Get mitochondrial genes from mito carta
+```{r, warning=FALSE, message=FALSE}
+highLightList <- filter(corRes.sig, symbol %in% mitoProtList)$id
+```
+
+**MTORC1_SIGNALING**
+
+```{r heatmapMTOR, fig.height=13, fig.width=11}
+corRes.sig <- dplyr::rename(corRes.rna, coef = "logFC") %>% dplyr::filter(adj.P.Val < 0.01, coef > 0)
+
+colAnno <- data.frame(row.names = colnames(exprMat),
+                      LF4 = designMat[,"LF4"])
+col_fun = circlize::colorRamp2(c(min(colAnno$LF4),max(colAnno$LF4)), c("white",colList[4]))
+annoColor <- list(`CLL-PD` = col_fun)
+colnames(colAnno) <- c("CLL-PD")
+
+plotSetHeatmapComplex(geneSigTab = corRes.sig, geneSet =gmts$H, setName = "HALLMARK_MTORC1_SIGNALING", exprMat, colAnno, scale = TRUE,
+                      annoCol = annoColor, highLight =  highLightList)
+```
+
+**OXIDATIVE_PHOSPHORYLATION**
+```{r heatmapOXPHOS,fig.height=15, fig.width=11}
+
+plotSetHeatmapComplex(geneSigTab = corRes.sig, geneSet =gmts$H, setName = "HALLMARK_OXIDATIVE_PHOSPHORYLATION", exprMat, colAnno, scale = TRUE, annoCol = annoColor, highLight =  highLightList)
+
+#get a percentage of mitochondiral proteins in this set
+allGeneInList <- intersect(corRes.sig$symbol, loadGSC(gmts$H)$gsc$HALLMARK_OXIDATIVE_PHOSPHORYLATION)
+
+```
+
+How many genes are in the geneset of OXIDATIVE PHOSPHORYLAITON?
+```{r}
+length(allGeneInList)
+```
+
+How many genes are also on mitochondria?
+```{r}
+sum(allGeneInList %in% mitoProtList)
+```
+
+## A network plot showing the overlap of gene enriched in those three pathways and annotate mitochondrial genes
+```{r}
+corRes.sigUp <- filter(corRes.rna, adj.P.Val < 0.01, logFC >0)
+
+setList <- c("HALLMARK_MYC_TARGETS_V1", "HALLMARK_OXIDATIVE_PHOSPHORYLATION", "HALLMARK_MTORC1_SIGNALING")
+nodeTab <- lapply(setList, function(eachSet) {
+  geneList <- intersect(corRes.sig$symbol, loadGSC(gmts$H)$gsc[[eachSet]])
+  tibble(symbol = geneList, setName = eachSet)
+}) %>% bind_rows() %>%
+  mutate(setName = str_remove(setName,"HALLMARK_")) %>%
+  mutate(setName = setMap[match(setName, setMap$setName),]$pathwayName) %>%
+  mutate(mitoGene = ifelse(symbol %in% mitoProtList, "yes", "no"))
+#write_csv2(nodeTab, "sourceData_4d.csv")
+```
+
+
+```{r, warning=FALSE}
+#get node list
+allNodes <- union(nodeTab$symbol, nodeTab$setName) 
+
+nodeList <- data.frame(id = seq(length(allNodes))-1, name = allNodes, stringsAsFactors = FALSE) %>%
+  mutate(type = ifelse(name %in% mitoProtList, 
+                          "yes","no")) %>%
+  mutate(type = ifelse(name %in% nodeTab$setName,"set", type)) %>%
+  mutate(nodeText = ifelse(type == "no","",name)) %>%
+  mutate(pathText = ifelse(type == "set", name, "")) %>%
+  mutate(textSize = ifelse(type == "set",1,0.8))
+  
+
+#get edge list
+edgeList <- nodeTab %>%
+  dplyr::rename(Source = setName, Target = symbol) %>%
+  mutate(Source = nodeList[match(Source,nodeList$name),]$id,
+         Target = nodeList[match(Target, nodeList$name),]$id)
+  data.frame(stringsAsFactors = FALSE)
+
+net <- graph_from_data_frame(vertices = nodeList, d=edgeList, directed = FALSE)
+```
+
+
+```{r, fig.height=5, fig.width=5}
+set.seed(2)
+tidyNet <- as_tbl_graph(net)
+enrichNet <- ggraph(tidyNet, layout = "igraph", algorithm = "nicely") + 
+  geom_edge_link(color = "grey90", width=1) + 
+  geom_node_point(aes(color =type), size=3, alpha=0.5) + 
+  geom_node_text(aes(label = pathText, col = type, size = type), repel = TRUE, fontface= "bold") +
+  scale_size_manual(values =c(set = 6, yes = 5, no =4))+
+  scale_color_manual(values = c(yes = colList[4],no = "grey60", set = colList[1])) + 
+  #scale_edge_color_brewer(palette = "Set2") +
+  theme_graph(base_family = "sans") + theme(legend.position = "none", plot.margin =margin(-10,0,-10,-10)) 
+enrichNet
+```
+
+prepare legend
+```{r, fig.height=5, fig.width=5}
+legTab <- tibble(x=c(1,1), y=c(1,2), group = c("mitochondrial protein coding genes",
+                                               "other genes"))
+
+legP <- ggplot(legTab, aes(x=x, y=y, col = group)) +
+  geom_point(size=4) + theme_bw() +
+  scale_color_manual(values = c("mitochondrial protein coding genes" = colList[4], "other genes" = "grey60"), name = "") +
+  theme(legend.text = element_text(size=12),
+        legend.background = element_blank())
+legP <- get_legend(legP)
+
+comNet <- ggdraw(enrichNet) + draw_plot(legP, x = 0.22, y=-0.35)
+comNet
+```
+
+# Compare CLL-PD expression signature with other stimulation signatures
+
+## Expression profile of U-CLL cells treated with CPG (GSE30105)
+
+### Query and pre-processing microarray data
+CLL cells were purified by negative selection using anti-CD3, anti-CD14 and anti-CD16 mouse monoclonal antibodies and Dynabeads coated with a pan anti-mouse IgG antibody. The purity of the CLL cells after negative selection was monitored by flow-cytometry and the percentage of CD5+/CD19+ cells exceeded 98% for each sample. CLL cells were resuspended in RPMI complete medium at a density of 2 × 105 and stimulated with 7.5 μg/ml complete phosphorothioate CpG ODN oligonucleotide 2006 (5′-TCGTCGTTTTGTCGTTTTGTCGTT-3′) or left unstimulated for 18 h.
+
+```{r, cache=TRUE}
+gse30105 <- getGEO("GSE30105", GSEMatrix = TRUE)
+```
+
+```{r}
+##GSE30105
+gse <- gse30105[[1]]
+gse$treatment <- factor(ifelse(grepl("Unstimulated",gse$title), "untreated","CPG"),
+                        levels = c("untreated","CPG"))
+gse.vst <- gse
+exprs(gse.vst) <- normalizeVSN(exprs(gse))
+gse.vst <- gse.vst[fData(gse.vst)$`GENE_SYMBOL`!="",]
+#invariant filtering
+sds <- genefilter::rowSds(exprs(gse.vst))
+gse.vst <- gse.vst[sds > genefilter::shorth(sds)]
+```
+
+
+## Differential expression and enrichment analysis
+
+
+Differential expression using Limma
+```{r}
+mm <- model.matrix( ~ 1 + treatment, pData(gse.vst))
+fit <- lmFit(gse.vst, mm)
+fit <- eBayes(fit)
+resTab <- limma::topTable(fit, coef= "treatmentCPG", number = "all")
+hist(resTab$P.Value)
+```
+
+```{r}
+sigList <- list()
+sigListP <- list() #for upset plot, only cut-off is adj.P.Val < 0.01
+sigList[["Up-regulated by CpG ODN"]] <- unique(filter(resTab, adj.P.Val < 0.01, logFC > 1.5)$GENE_SYMBOL)
+sigListP[["CpG ODN"]] <- unique(filter(resTab, adj.P.Val < 0.01, logFC > 0)$GENE_SYMBOL)
+```
+
+Enrichment
+```{r, fig.width=8, fig.height=6}
+highSet <- c("MYC_TARGETS_V1", "MYC_TARGETS_V2", "MTORC1_SIGNALING","OXIDATIVE_PHOSPHORYLATION")
+exprMat <- exprs(gse.vst)
+designMat <- model.matrix( ~ 1 + treatment, pData(gse.vst))
+
+enrichRes <- runCamera(exprMat, designMat, gmts$H, id = fData(gse.vst)$GENE_SYMBOL,
+                       method = "camera", pCut = 0.01, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "CpG ODN treatment", insideLegend = TRUE, setToHighlight = highSet)
+plotEnrich.CPG <- enrichRes$enrichPlot + theme(plot.title = element_text(size=18, face = "bold"))
+plotEnrich.CPG
+```
+
+## Signature of IL21 + CD40L 
+
+### Pre-processing microarray data
+```{r,cache=TRUE}
+GSE50572 <- getGEO("GSE50572", GSEMatrix = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE}
+gse <- GSE50572[[1]]
+
+#table(gse$`treatment:ch1`)
+condi <- structure(c("none","Tcell","IL21_CD40L"),
+                   names = c("none","cocultured with activated T cells",
+                             "IL-21 + cocultured with CD40L- cells"))
+gse <- gse[,gse$`treatment:ch1` %in% names(condi)]
+gse$treatment <- condi[gse$`treatment:ch1`]
+gse$treatment <- factor(gse$treatment, levels =c("none","IL21_CD40L","Tcell"))
+
+gse.all <- gse
+exprs(gse.all) <- normalizeVSN(exprs(gse))
+gse.all <- gse.all[fData(gse.all)$`Gene Symbol`!="",]
+
+#invariant filtering
+sds <- genefilter::rowSds(exprs(gse.all))
+gse.all <- gse.all[sds > genefilter::shorth(sds)]
+```
+
+Differential expression using Limma
+```{r}
+mm <- model.matrix( ~ 1 + treatment, pData(gse.all))
+fit <- lmFit(gse.all, mm)
+fit <- eBayes(fit)
+```
+
+### Differential expression and enrichment analysis
+
+Differential expression using Limma
+```{r}
+resTab <- limma::topTable(fit, coef= "treatmentIL21_CD40L", number = "all")
+hist(resTab$P.Value)
+```
+
+Creat gene sets
+```{r}
+sigList[["Up-regulated by IL21+CD40L"]] <- unique(filter(resTab, adj.P.Val < 0.01, logFC > 1.5)$Gene.Symbol)
+sigListP[["IL21+CD40L"]] <- unique(filter(resTab, adj.P.Val < 0.01,logFC>0)$Gene.Symbol)
+
+```
+
+Enrichment analysis
+```{r, fig.width=8, fig.height=6}
+exprMat <- exprs(gse.all)
+designMat <- mm
+
+enrichRes <- runCamera(exprMat, designMat, gmts$H, id = fData(gse.all)$`Gene Symbol`,
+                       contrast = "treatmentIL21_CD40L",
+                       method = "camera", pCut = 0.01, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "IL21 + CD40L treatment", insideLegend = TRUE, setToHighlight = highSet)
+
+plotEnrich.IL21CD40L <- enrichRes$enrichPlot + theme(plot.title = element_text(size=18, face = "bold"))
+plotEnrich.IL21CD40L
+```
+
+
+## T cell co-cultrue signatures
+
+### Differential expression and enrichment analysis
+
+Differential expression using Limma
+```{r}
+resTab <- limma::topTable(fit, coef= "treatmentTcell", number = "all")
+hist(resTab$P.Value)
+```
+
+```{r}
+sigList[["Up-regulated by activated T cells"]] <- unique(filter(resTab, adj.P.Val < 0.01, logFC > 1.5)$Gene.Symbol)
+sigListP[["activated T cells"]] <- unique(filter(resTab, adj.P.Val < 0.01, logFC >0)$Gene.Symbol)
+
+```
+
+Enrichment
+```{r, fig.width=8, fig.height=6}
+enrichRes <- runCamera(exprMat, mm, gmts$H, id = fData(gse.all)$`Gene Symbol`, contrast = "treatmentTcell",
+                       method = "camera", pCut = 0.01, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "Co-culture with activated T cells", insideLegend = TRUE, setToHighlight = highSet)
+plotEnrich.Tcell <- enrichRes$enrichPlot+ theme(plot.title = element_text(size=18, face = "bold"))
+plotEnrich.Tcell
+```
+
+
+## BCR-triggering signature by anti-IgM stimulation for 390 min  (GSE3941)
+
+```{r, cache=TRUE}
+gse39411 <- getGEO("GSE39411", GSEMatrix = TRUE)
+```
+
+```{r, cache=TRUE, eval= TRUE}
+gse <- gse39411[[1]]
+
+#subset for only B-cell and CLL without transfection
+gse <- gse[,gse$`transfected with:ch1` == "none" &
+             gse$`time point (min):ch1` == "T390" &
+             gse$`cell type:ch1` == "chronic lymphocytic leukemia B-cell"]
+
+#vst
+gse.vst <- gse
+exprs(gse.vst) <- limma::normalizeVSN(gse.vst)
+
+patAnno <- pData(gse.vst) %>% rownames_to_column("sampleID") %>%
+  select(sampleID, description) %>%
+  separate(description, into = c("patID","stimulation","timePoint"),sep = "_") %>%
+  mutate(cellType = substr(patID,1,nchar(patID)-1)) %>%
+  mutate(cellType = ifelse(cellType == "N", "B-cell",cellType)) %>%
+  mutate(timePoint = abs(as.integer(gsub("T","",timePoint)))) %>%
+  mutate(stimulation = factor(stimulation, levels = c("US","S")))
+
+pData(gse.vst) <- patAnno[match(colnames(gse.vst), patAnno$sampleID),]
+```
+
+Differential expression (CLL cells for 390 min)
+```{r}
+gse.test <- gse.vst
+```
+
+Differential expression using Limma
+```{r}
+mm <- model.matrix( ~ 1  + patID + stimulation, pData(gse.test))
+fit <- lmFit(gse.test, mm)
+fit <- eBayes(fit)
+resTab <- limma::topTable(fit, coef= "stimulationS", number = "all")
+hist(resTab$P.Value)
+```
+
+```{r}
+sigList[["Up-regulated by anti-IgM"]] <- unique(filter(resTab, adj.P.Val < 0.01, logFC > 1.5)$Gene.Symbol)
+sigListP[["anti-IgM"]] <- unique(filter(resTab, adj.P.Val < 0.01, logFC > 0)$Gene.Symbol)
+
+```
+
+Enrichment
+```{r, fig.height=5, fig.width=8}
+exprMat <- exprs(gse.test)
+designMat <- model.matrix( ~ 1  + patID  + stimulation, pData(gse.test))
+
+enrichRes <- runCamera(exprMat, designMat, gmts$H, id = fData(gse.test)$`Gene Symbol`,
+                       method = "camera", pCut = 0.01, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "anti-IgM treatment",insideLegend = TRUE, setToHighlight = highSet)
+plotEnrich.IgM <- enrichRes$enrichPlot+ theme(plot.title = element_text(size=18, face = "bold"))
+plotEnrich.IgM
+```
+
+## Enrichment analysis using all avboe stimulation signatures
+
+```{r CpG_enrich, fig.height=4, fig.width=6}
+fgseaOut <- runFGSEA(corRes.rna, sigList, ifFDR = FALSE)
+pList <- fgseaOut$plots
+
+stiEnrich <- pList[[1]]
+stiEnrich
+```
+
+```{r GSEA_stimulation_Sig, fig.height=8, fig.width=12}
+pList[[2]] <- pList[[2]] + ylab("")
+pList[[4]] <- pList[[4]] + ylab("")
+stiEnrichOther <- plot_grid(plotlist = pList, ncol=2, align = "hv", axis = "tblr")
+fgseaOut$table
+stiEnrichOther
+```
+
+Upset plot to show gene overlaps
+```{r, fig.height=10, fig.width=15}
+geneOverList <- c(list(`CLL-PD` = filter(corRes.rna, logFC>0, adj.P.Val <0.01)$symbol), sigListP)
+UpSetR::upset(UpSetR::fromList(geneOverList))
+```
+
+# Proteomic signatures for CLL-PD
+
+## Detect proteins correlated with CLL-PD (LF4)
+
+### Process datasets
+
+Process proteomics data
+```{r}
+protCLL <- protein
+protCLL$CLLPD <- facTab[match(colnames(protCLL), facTab$sample),]$value
+protCLL <- protCLL[,!is.na(protCLL$CLLPD)]
+protMat <- assays(protCLL)[["QRILC"]]
+```
+
+**How many samples have CLL-PD value?
+```{r}
+ncol(protCLL)
+```
+
+### Correlate protein expression with CLL-PD using proDA
+
+Fit the probailistic dropout model
+```{r, cache=TRUE,autodep = TRUE}
+CLLPD <- protCLL$CLLPD
+fit <- proDA::proDA(protMat, design = ~ CLLPD)
+```
+
+Test for differentially expressed proteins
+```{r}
+corRes.prot <- proDA::test_diff(fit, "CLLPD") %>%
+  dplyr::rename(id = name, logFC = diff, t=t_statistic,
+                P.Value = pval, adj.P.Val = adj_pval) %>% 
+  mutate(symbol = rowData(protCLL[id,])$hgnc_symbol,
+         coef = logFC) %>%
+  select(symbol, id, coef, t, P.Value, adj.P.Val, n_obs) %>%  
+  arrange(P.Value) %>% 
+  as_tibble()
+```
+
+### P-value histogram
+```{r}
+ggplot(corRes.prot, aes(x=P.Value)) + geom_histogram(fill = "lightblue",col="grey50") + xlim(0,1) +
+  theme_full
+```
+
+
+### List of significantly correlated proteins (10% FDR)
+```{r}
+corRes.sig.prot <- filter(corRes.prot, adj.P.Val <= 0.1) %>% arrange(desc(t))
+corRes.sig.prot %>% mutate_if(is.numeric, formatC, digits =2, format="e") %>% 
+  mutate(n_obs = as.integer(n_obs)) %>%
+  DT::datatable()
+```
+
+How many proteins in total?
+```{r}
+nrow(corRes.sig.prot)
+```
+
+How many up-regulated proteins?
+```{r}
+nrow(filter(corRes.sig.prot, t>0))
+```
+
+
+### Enrichment using Hallmark genesets for all CLLs
+```{r, fig.width=10, fig.height=6}
+designMat <- model.matrix(~CLLPD)
+enrichRes <- runCamera(protMat, designMat, gmts$H, 
+                       id = rowData(protCLL[rownames(protMat),])$hgnc_symbol, #LF4
+                       method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
+                       plotTitle = "Pathway enrichment on protein level (5% FDR)", insideLegend = TRUE, direction = "Up", setMap = setMap)
+proteinEnrichHallmark <- enrichRes$enrichPlot + theme(legend.position = c(0.8,0.2))
+proteinEnrichHallmark
+
+##write_csv2(as_tibble(enrichRes$enrichTab,rownames = "set"), "sourceData_4b.csv")
+```
+
+
+### Heatmap of enrichmed MYC targets
+```{r heatmapProtMYC, fig.height=8, fig.width=10}
+mycTar <- unique(unlist(loadGSC(gmts$H)$gsc[c("HALLMARK_MYC_TARGETS_V2","HALLMARK_MYC_TARGETS_V1")]))
+
+corRes.sigUp <- corRes.prot %>% dplyr::filter(P.Value < 0.05, t > 0)
+
+colAnno <- tibble(patID = colnames(protMat), 
+                 F4 = protCLL$CLLPD) %>%
+  arrange(F4) %>% data.frame() %>% column_to_rownames("patID")
+
+col_fun = circlize::colorRamp2(c(min(colAnno$F4),max(colAnno$F4)), c("white",colList[4]))
+annoColor <- list(`CLL-PD` = col_fun)
+colnames(colAnno) <- c("CLL-PD")
+
+plotProtMYC <- plotSetHeatmapComplex(geneSigTab = corRes.sigUp, geneSet =mycTar, setName = "HALLMARK_MYC_TARGETS", exprMat = protMat,colAnno =colAnno, scale = TRUE, annoCol = annoColor)
+
+plotProtMYC
+```
+
+## Scatter plot of selected proteins
+
+### MYC tagets
+```{r protMycTarScatter,fig.height=5, fig.width=15}
+seleProt <- c("MCM4","NME1","PAICS")
+tTab <- filter(corRes.prot, symbol %in% seleProt)
+scatterTab <- protMat[tTab$id,] %>% data.frame() %>%
+  rownames_to_column("id") %>% gather(key="patID", value = "value",-id) %>%
+  filter(!is.na(value)) %>%
+  mutate(LF4 = facTab[match(patID, facTab$sample),]$value,
+         symbol = rowData(protCLL)[id,]$hgnc_symbol)
+
+
+plotProtScatter <- lapply(seleProt, function(n) {
+  eachTab <- filter(scatterTab, symbol == n) 
+  res <- cor.test(eachTab$value, eachTab$LF4)
+  annoCoef <- paste("coefficient =",format(res$estimate,digits = 2))
+  annoP <- paste("italic(P)~'=",formatNum(res$p.value, digits = 1, format = "e"),"'")
+  ggplot(eachTab, aes(x=LF4, y=value)) +
+    geom_point(fill = colList[4],size=2,shape=21) + geom_smooth(method="lm",se=FALSE, linetype = "dashed", color = "grey50") +
+    annotate("text", x = -1.5, y = Inf, label = annoCoef,
+           hjust=0, vjust =1, size = 5, col= colList[1]) +
+    annotate("text", x = -1.5, y = Inf, label = annoP,
+           hjust=0, vjust =3, size = 5, col= colList[1], parse= TRUE) +
+    ggtitle(unique(eachTab$symbol)) + ylab("Protein expression") + xlab("CLL-PD") +
+    #ylim(c(0.4,1.2)) +
+    theme_half 
+})
+grid.arrange(grobs= plotProtScatter, ncol=3)
+
+```
+
+## Differentially expressed proteins on mitochondria
+
+### Mitochondrial proteins
+Read a table of proteins on mitochondria from mito
+```{r, warning=FALSE}
+corRes.mito <- corRes.sig.prot %>% filter(symbol %in% mitoProtList, t>0)
+```
+
+How many proteins are on mitochodnria?
+```{r}
+nrow(corRes.mito)
+```
+
+
+Heatmap of significantly associated proteins (10% FDR), with mitochondrial proteins highlighed
+```{r allProtLF4, fig.height=12, fig.width=12}
+colAnno <- tibble(patID = colnames(protMat), 
+                  CLL_PD = protCLL$CLLPD) %>%
+  arrange(CLL_PD) %>% data.frame() %>% column_to_rownames("patID")
+
+col_fun = circlize::colorRamp2(c(min(colAnno$CLL_PD),max(colAnno$CLL_PD)), c("white",colList[4]))
+annoColor <- list(CLL_PD = col_fun)
+plotMat <- assays(protCLL[corRes.sig.prot$id,rownames(colAnno)])[["QRILC"]]
+plotMat <- jyluMisc::mscale(plotMat, censor = 6)
+
+protHeatmap <- plotSetHeatmapComplex(geneSigTab = corRes.sig.prot, geneSet = corRes.sig.prot$symbol,
+               exprMat = protMat, colAnno = colAnno, 
+               setName = "Proteins associated with CLL-PD (10%FDR)", annoCol = annoColor,
+               highLight = corRes.mito$id)
+grobHeatmap = grid.grabExpr(draw(protHeatmap))
+```
+
+How many up-regulated RNAs are mitochodnrial protiens?
+```{r}
+corRes.rna.mito <- filter(corRes.rna, t>0, adj.P.Val < 0.01, symbol %in% mitoProtList) 
+nrow(corRes.rna.mito)
+head(arrange(corRes.rna.mito, desc(t)))
+```
+
+```{r CLLPD_mitoProt,fig.height=6, fig.width=12}
+seleProt <- c("VDAC1","HSPD1")
+tTab <- filter(corRes.prot, symbol %in% seleProt)
+scatterTab <- protMat[tTab$id,] %>% data.frame() %>%
+  rownames_to_column("id") %>% gather(key="patID", value = "value",-id) %>%
+  filter(!is.na(value)) %>%
+  mutate(LF4 = facTab[match(patID, facTab$sample),]$value,
+         symbol = rowData(protCLL)[id,]$hgnc_symbol)
+
+
+plotMitoProScatter <- lapply(seleProt, function(n) {
+  eachTab <- filter(scatterTab, symbol == n) 
+  res <- cor.test(eachTab$value, eachTab$LF4)
+  annoCoef <- paste("coefficient =",format(res$estimate,digits = 2))
+  annoP <- paste("italic(P)~'=",formatNum(res$p.value, digits = 1, format = "e"),"'")
+  ggplot(eachTab, aes(x=LF4, y=value)) +
+    geom_point(fill = colList[4],size=3,shape=21) + geom_smooth(method="lm",se=FALSE, linetype = "dashed", color = "grey50") +
+    annotate("text", x = -1.5, y = Inf, label = annoCoef,
+           hjust=0, vjust =1, size = 5, col= colList[1]) +
+    annotate("text", x = -1.5, y = Inf, label = annoP,
+           hjust=0, vjust =3, size = 5, col= colList[1], parse= TRUE) +
+    ggtitle(unique(eachTab$symbol)) + ylab("Protein expression") + xlab("CLL-PD") +
+    #ylim(c(0.4,1.2)) +
+    theme_half 
+})
+corMitoMarer <- grid.arrange(grobs= plotMitoProScatter, ncol=2)
+corMitoMarer
+```
+
+
+## FACS validation using mitoTracker
+```{r mitoTracker, fig.height=6, fig.width=6}
+mitoTab <- mito %>% mutate(CLLPD = facTab[match(patientID, facTab$sample),]$value) %>%
+  pivot_longer(-c(patientID, CLLPD), names_to = "feature", values_to = "MFI") %>%
+  mutate(logMFI = log10(MFI))
+
+pList <- lapply(c("MitoTracker"), function(n) {
+  eachTab <- filter(mitoTab, feature == n) 
+  res <- cor.test(eachTab$logMFI, eachTab$CLLPD)
+  annoCoef <- paste("coefficient =",format(res$estimate,digits = 2))
+  annoP <- paste("italic(P)~'=",formatNum(res$p.value, digits = 2, format = "e"),"'")
+  ggplot(eachTab, aes(x=CLLPD, y=logMFI)) +
+    geom_point(fill = colList[3],size=5,shape=21) + geom_smooth(method="lm",se=FALSE, linetype = "dashed", color = "grey50") +
+    annotate("text", x = -1.5, y = Inf, label = annoCoef,
+           hjust=0, vjust =1, size = 5, col= colList[1]) +
+    annotate("text", x = -1.5, y = Inf, label = annoP,
+           hjust=0, vjust =3, size = 5, col= colList[1], parse= TRUE) +
+    ggtitle(unique(eachTab$feature)) + ylab(expression(log[10]~(MFI))) + xlab("CLL-PD") +
+    #ylim(c(0.4,1.2)) +
+    theme_half 
+})
+plotMitoScatter <- grid.arrange(grobs= pList, ncol=1)
+plotMitoScatter
+```
+
+# Association between CLL-PD and energy metabolism
+
+## Correlation test using linear model
+```{r}
+seaMat <- SummarizedExperiment::assay(seahorse)
+factorMatrix <- facTab.all %>% spread(key = factor, value = value) %>%
+  data.frame() %>% column_to_rownames("sample") 
+overSample <- intersect(colnames(seaMat), rownames(factorMatrix))
+factorMatrix <- factorMatrix[overSample,]
+factorMatrix <- factorMatrix[,complete.cases(t(factorMatrix))]
+designMat <- model.matrix(~1 +.,factorMatrix)
+seaMat <- seaMat[,rownames(designMat)]
+
+fit <- lmFit(seaMat, designMat)
+fit2 <- eBayes(fit)
+
+corRes.LF1 <- limma::topTable(fit2, number ="all", coef = "LF1", adjust.method = "BH") %>%
+  rownames_to_column("id") %>% as_tibble() %>% mutate(factor = "LF1")
+corRes.LF4 <- limma::topTable(fit2, number ="all", coef = "LF4", adjust.method = "BH") %>%
+  rownames_to_column("id") %>% as_tibble() %>% mutate(factor = "LF4")
+
+
+dim(seaMat)
+```
+
+## Plot P values for associations, straitified by F1 and F4
+```{r, fig.height=8, fig.width=12}
+plotTab <- bind_rows(corRes.LF1[,c("id","P.Value","factor")], corRes.LF4[,c("id","P.Value","factor")]) %>%
+  mutate(P.adj = p.adjust(P.Value, method = "BH")) %>%
+  mutate(id = str_replace_all(id, "[.]", " "))
+
+orderTab <- plotTab %>% select(id, P.Value, factor) %>% spread(key = factor, value = P.Value) %>%
+  arrange(LF1/LF4)
+
+plotTab <- plotTab %>% mutate(id = factor(id, levels = orderTab$id))
+
+fdrCut <- -log10((filter(plotTab,P.adj <= 0.05) %>% arrange(desc(P.Value)))$P.Value[1])
+
+plotFeature <- unique(filter(plotTab, P.adj <=0.05)$id)
+plotTab <- filter(plotTab, id %in% plotFeature)# %>%
+ # mutate(factor = ifelse(factor == "LF1", "F1", "F4 (CLL-PD)"))
+plotSeahorse <- ggplot(plotTab, aes(x=id, y=-log10(P.Value), col = factor, dodge = factor)) + 
+  geom_point(position = position_dodge(width=0.5),size=3) + 
+  geom_linerange(aes(ymin = 0, ymax=-log10(P.Value)),position = position_dodge2(width=0.5), size=1) + 
+  scale_color_manual(values = c(LF1=colList[3],LF4=colList[4]),labels = 
+                      c("F1","F4 (CLL-PD)"), name = "") +
+  geom_hline(yintercept = fdrCut, linetype = "dashed", color = "grey50") +
+  coord_flip() + xlab("") + ylab(expression(-log[10]*'('*p~value*')')) + 
+  annotate("text", x = Inf, y = fdrCut, label = paste0("5% FDR"),
+             size = 3, vjust =1.5, hjust=-0.1) +
+  theme_full + theme(legend.position = "bottom", 
+                     legend.text = element_text(size=13)) 
+plotSeahorse
+```
+
+## Scatter plot for showing assocations
+
+```{r seahorseScatter,fig.height=5, fig.width=15}
+plotFeature <- c("maximal.respiration", "spare.respiratory.capacity", "OCR")
+scatterTab <- seaMat[plotFeature,] %>% data.frame() %>%
+  rownames_to_column("feature") %>% gather(key="patID", value = "value",-feature) %>%
+  filter(!is.na(value)) %>%
+  mutate(LF4 = facTab[match(patID, facTab$sample),]$value)
+
+pList <- lapply(plotFeature, function(n) {
+  eachTab <- filter(scatterTab, feature == n) %>%
+   mutate(feature = str_replace_all(feature, "[.]", " "))
+  corRes = cor.test(eachTab$value, eachTab$LF4)
+  annoCoef <- paste("'coefficient ='~",format(corRes$estimate,digits = 2))
+  annoP <- paste("italic(P)~'=",formatNum(corRes$p.value, digits = 1, format = "e"),"'")
+  ggplot(eachTab, aes(x=LF4, y=value)) +
+    geom_point(fill = colList[6],size=2, shape =21) + geom_smooth(method="lm",se=FALSE, linetype = "dashed", color = "grey50") +
+    annotate("text", x = Inf, y = Inf, label = annoCoef,
+           hjust=1, vjust =1, size = 5, parse = TRUE, col= colList[1]) +
+    annotate("text", x = Inf, y = Inf, label = annoP,
+           hjust=1, vjust =3, size = 5, parse = TRUE, col= colList[1]) +
+    ggtitle(unique(eachTab$feature)) + ylab("OCR (pMol/min)") + xlab("CLL-PD") +
+    theme_half +
+    theme(plot.margin = margin(5,20,5,20),
+          plot.title = element_text(size = 14, hjust =0.5, face="bold"))
+})
+grid.arrange(grobs= pList, ncol=3)
+plotSeahorseScatter <- pList
+plotSeahorseScatter
+```
+
+# Associations between CLL-PD(F4) and ex-vivo drug response phenotyps
+
+## Loadings of drug view on LF1 and LF4
+
+```{r, fig.width=5, fig.height=8}
+plotLF1drug <- plotTopWeights.m(weightTab, view =  "Drugs", factor = "LF1", nfeatures = 15)
+plotLF1drug
+```
+
+```{r,fig.width=5, fig.height=8}
+plotLF4Drug <- plotTopWeights.m(weightTab, view =  "Drugs", factor = "LF4", nfeatures = 15)
+plotLF4Drug
+```
+
+## Correlation test using limma
+
+Association test
+```{r}
+viabSD <- group_by(drug, Drug, Concentration) %>%
+  summarise(sdViab = sd(normVal), meanViab = mean(normVal)) %>%
+  filter(sdViab > genefilter::shorth(sdViab), meanViab < 0.9)
+
+viabMat <- filter(drug, paste0(Drug, Concentration) %in% paste0(viabSD$Drug, viabSD$Concentration)) %>%
+  distinct(patientID, Drug, auc) %>%
+  filter(patientID %in% facTab$sample) %>%
+  spread(key = patientID, value = auc) %>%
+  data.frame() %>% column_to_rownames("Drug")
+
+factorMatrix <- facTab.all %>% spread(key = factor, value = value) %>%
+  data.frame() %>% column_to_rownames("sample") 
+factorMatrix <- factorMatrix[colnames(viabMat),complete.cases(t(factorMatrix))]
+
+designMat <- model.matrix(~1 +.,factorMatrix)
+fit <- lmFit(viabMat, designMat)
+fit2 <- eBayes(fit)
+
+corRes <- limma::topTable(fit2, number ="all", coef = "LF4", adjust.method = "BH") %>%
+  rownames_to_column("name") %>% as_tibble() %>% mutate(factor = "LF4")
+corRes.LF1 <- limma::topTable(fit2, number ="all", coef = "LF1", adjust.method = "BH") %>%
+  rownames_to_column("name") %>% as_tibble() %>% mutate(factor = "LF1")
+corRes.LF2 <- limma::topTable(fit2, number ="all", coef = "LF2", adjust.method = "BH") %>%
+  rownames_to_column("name") %>% as_tibble() %>% mutate(factor = "LF2")
+```
+
+## Compare the strength of associations to F1 (IGHV), F2 (trisomy12) and F4 (CLL-PD)
+```{r, fig.height=5, fig.width=10}
+plotTab <- bind_rows(corRes, corRes.LF1, corRes.LF2) %>% 
+  mutate(P.adj = p.adjust(P.Value, method = "BH")) %>% arrange(P.Value)
+
+drugShow <- filter(plotTab, P.adj <= 0.05) %>%
+  arrange(P.Value) %>% distinct(name)
+
+plotTab <- filter(plotTab, name %in% drugShow$name) %>%
+  mutate(name = factor(name, levels = drugShow$name))
+
+fdrCut <- -log10((filter(plotTab,P.adj <= 0.05) %>% arrange(desc(P.Value)))$P.Value[1])
+
+plotDrugPval <- ggplot(plotTab, aes(x=name, y=-log10(P.Value), col = factor)) + 
+  geom_point(size=3) + 
+  scale_color_manual(values = c(LF1=colList[3],LF2 = colList[5], LF4=colList[4]), labels = c("F1","F2","F4 (CLL-PD)")) +
+  geom_hline(yintercept = fdrCut, linetype = "dashed", color = "grey50") +
+  xlab("") + ylab(expression(-log[10]*'('*p~value*')')) + 
+  annotate("text", x = Inf, y = fdrCut, label = paste0("5% FDR"),
+             size = 3, vjust =2, hjust=-0.1) +
+  theme_full +
+  theme(panel.grid.major = element_line(),
+        panel.grid.minor = element_line(),
+        axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5))
+plotDrugPval
+```
+
+
+## Scatter plots significant assocations (5% FDR)
+```{r,fig.height=12, fig.width=12}
+plotFeature <- as.character(filter(plotTab, factor == "LF4", P.adj < 0.05)$name)
+
+scatterTab <- viabMat[plotFeature,] %>% data.frame() %>%
+  rownames_to_column("feature") %>% gather(key="patID", value = "value",-feature) %>%
+  filter(!is.na(value)) %>%
+  mutate(LF4 = facTab[match(patID, facTab$sample),]$value)
+
+
+plotDrugScatter <- lapply(plotFeature, function(n) {
+  eachTab <- filter(scatterTab, feature == n) 
+  res <- cor.test(eachTab$value, eachTab$LF4)
+  annoCoef <- paste("coefficient =",format(res$estimate,digits = 2))
+  annoP <- paste("italic(P)~'=",formatNum(res$p.value, digits = 1, format = "e"),"'")
+  ggplot(eachTab, aes(x=LF4, y=value)) +
+    geom_point(fill = colList[4],size=2,shape=21) + geom_smooth(method="lm",se=FALSE, linetype = "dashed", color = "grey50") +
+    annotate("text", x = Inf, y = Inf, label = annoCoef,
+           hjust=1, vjust =1, size = 5, col= colList[1]) +
+    annotate("text", x = Inf, y = Inf, label = annoP,
+           hjust=1, vjust =3, size = 5, col= colList[1], parse= TRUE) +
+    ggtitle(unique(eachTab$feature)) + ylab("Viability") + xlab("CLL-PD") +
+    #ylim(c(0.4,1.2)) +
+    theme_half 
+})
+grid.arrange(grobs= plotDrugScatter, ncol=3)
+
+```
+
+## Organizing figures for Section 4 in the manuscript
+
+### Main Figure 4
+```{r figure4, fig.height=8, fig.width=12.5}
+title = ggdraw() + draw_figure_label("Figure 4", fontface = "bold", position = "top.left",size=22)
+
+leftGrid <- plot_grid(rnaEnrichHallmark + theme(plot.margin = margin(0,1,1,0,"cm")),
+                      proteinEnrichHallmark + theme(plot.margin = margin(1,1,0,0,"cm")), 
+                      ncol=1, 
+                      rel_heights = c(1.2,1),labels = c("a","b"), label_size = 22,
+                      vjust = c(1.5,1.5))
+
+rightGrid <- plot_grid(plotSeahorse, comNet,
+                       ncol=1,rel_heights = c(0.58, 0.5),
+                       labels = c("c","d"), label_size = 22)
+
+pout <- plot_grid(leftGrid, rightGrid,rel_widths = c(1,1), ncol =2)
+plot_grid(title, pout, rel_heights = c(0.05,0.95), ncol = 1)
+#ggsave("Figure4.png", height = 8, width = 12.5)
+```
+
+## Supplementary figures
+
+### Enrichment for M-CLL and U-CLL separately
+```{r enrichUM, fig.height=9, fig.width=10}
+plot_grid(plotEnrichHallmark.U, NULL, plotEnrichHallmark.M, rel_heights = c(0.5,0.05,0.5), nrow = 3, align = "v")
+```
+
+
+### Asseble supplementary figures to show enrichment barplot
+```{r otherStimulationErich,fig.height=15, fig.width=20, dev=c("png", "pdf")}
+plot_grid(plotEnrich.CPG, plotEnrich.IL21CD40L, plotEnrich.Tcell, plotEnrich.IgM,
+          ncol=2, align = "hv",axis = "tblr")
+```
+
+#### Supplementary figure of Pvalue and variance explained plot
+```{r drugPvar, fig.height=18, fig.width=12}
+#pdf("test.pdf", height=14, width = 12)
+plot_grid(plotDrugPval,
+          plot_grid(plotlist = plotDrugScatter, ncol = 3),
+          align = "v", nrow =2, labels = c("A","B"), 
+          rel_heights = c(0.4,0.6),label_size = 22,ncol=1)
+#dev.off()
+```
+
+
+#### Supplementary Figure for mitochondrial biogenesis
+```{r mitoBiogenesis, fig.height=18, fig.width=14}
+plot_grid(grobHeatmap,
+          plot_grid(plotMitoScatter, corMitoMarer, nrow=1, rel_widths = c(0.5,1), labels = c("B","C"), label_size = 22),
+          ncol=1, rel_heights = c(3,1), labels = c("A",""), label_size = 22)
+#ggsave("test.pdf", height = 18, width = 14)
+```

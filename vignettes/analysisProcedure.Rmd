@@ -1,0 +1,108 @@
+---
+title: "Molecular basis for proliferative drive in chronic lymphocytic leukemia"
+output: BiocStyle::html_document
+vignette: >
+  %\VignetteIndexEntry{analysisProcedure}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+# Introduction
+
+This document shows a walktrough of the analyses done for the paper "Molecular basis for proliferative drive in chronic lymphocytic leukemia" by Lu J et al.
+
+***
+
+```{r echo=FALSE}
+.standalone=FALSE
+```
+
+```{r, message=FALSE, warning=FALSE, include=!.standalone}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(mofaCLL)
+library(reticulate)
+library(DESeq2)
+library(sva)
+library(MultiAssayExperiment)
+library(MOFA)
+library(survival)
+library(survminer)
+library(maxstat)
+library(gridExtra)
+library(car)
+library(cowplot)
+library(egg)
+library(ggrepel)
+library(ggbeeswarm)
+library(grImport)
+library(fgsea)
+library(limma)
+library(GEOquery)
+library(pheatmap)
+library(UpSetR)
+library(glmnet)
+library(tidygraph)
+library(igraph)
+library(ggraph)
+library(ComplexHeatmap)
+library(scattermore)
+library(CATALYST)
+library(RColorBrewer)
+library(circlize)
+library(diffcyt)
+library(genefilter)
+library(lubridate)
+library(tidyverse)
+```
+
+***
+
+<!-- **p1** -->
+
+```{r p01, child = 'src/part1.Rmd', cache=TRUE}
+```
+
+***
+
+<!-- **p2** -->
+
+```{r p02, child = 'src/part2.Rmd', cache=TRUE}
+```
+
+***
+
+<!-- **p3** -->
+
+```{r p03, child = 'src/part3.Rmd', cache=TRUE}
+```
+
+***
+
+<!-- **p4**-->
+
+```{r p04, child = 'src/part4.Rmd', cache=TRUE}
+```
+
+***
+
+<!-- **p5** -->
+
+```{r p05, child = 'src/part5.Rmd', cache=TRUE}
+```
+
+
+***
+
+<!-- **p6** -->
+
+```{r p06, child = 'src/part6.Rmd', cache=TRUE}
+```
+
+***
+
+# End of session
+
+```{r}
+sessionInfo()
+```

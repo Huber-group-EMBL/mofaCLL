@@ -1,0 +1,11 @@
+setName	pathwayName
+OXIDATIVE_PHOSPHORYLATION	Oxidative phosphorylation
+MYC_TARGETS_V1	MYC targets v1
+MTORC1_SIGNALING	mTORC1 signaling
+INTERFERON_ALPHA_RESPONSE	Interferon alpha response
+PROTEIN_SECRETION	Protein secretion
+CHOLESTEROL_HOMEOSTASIS	Cholesterol homeostatisis
+FATTY_ACID_METABOLISM	Fatty acid metabolism
+INTERFERON_GAMMA_RESPONSE	Interferon gamma response
+MYC_TARGETS_V2	MYC targets v2
+UNFOLDED_PROTEIN_RESPONSE	Unfolded protein response
