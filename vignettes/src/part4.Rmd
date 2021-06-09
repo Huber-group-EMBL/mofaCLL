@@ -7,6 +7,12 @@ output:
 ---
 
 ```{r, message=FALSE, include=!exists(".standalone"), eval=!exists(".standalone")}
+
+plotDir = ifelse(exists(".standalone"), "", "part4/")
+if(plotDir!="") if(!file.exists(plotDir)) dir.create(plotDir)
+knitr::opts_chunk$set(fig.path=plotDir, dev=c("png", "pdf"))
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
 #Libraries
 library(mofaCLL)
 library(gridExtra)
@@ -33,8 +39,7 @@ data("mofaOut","gene","rna","mutLoad","tabFACS")
 ```
 
 Download methylation dataset from server to a temporary folder
-(The methylation data will be uploaded to ExperimentHub later)
-```{r, eval=TRUE}
+```{r}
 methPath <- file.path(tempdir(),"meth.RData")
 if(!file.exists(methPath)) {
   download.file("https://www.huber.embl.de/users/jlu/data/meth.RData",
@@ -106,8 +111,6 @@ tRes <- apply(genData, 2, function(x) {
                               p.adj = p.adjust(p, method = "BH")) %>%
   arrange(p)
 filter(tRes, p.adj <0.05) %>% mutate_if(is.numeric, formatNum, digits =3, format = "e") %>% DT::datatable()
-
-#write_csv2(tRes, "sourceData_3b.csv")
 ```
 
 Volcano plot
@@ -223,6 +226,7 @@ plotTab <- filter(compareTab, platform == "WGS")
 corTotal.wgs <- plotCor(plotTab, "LF4", "n", "CLL-PD", "Total number of mutations",
         sprintf("WGS dataset (n=%s)",nrow(plotTab)), colList[[6]])
 corTotal.wgs
+
 ```
 
 ### Assocations with recurrent aberration
@@ -232,7 +236,6 @@ plotTab <- distinct(compareTab, patID, .keep_all = TRUE)
 corRecurr <- plotCor(plotTab, "LF4", "n.recurr", "CLL-PD", "Number of recurrent aberrations",
         "",colList[[5]]) 
 corRecurr
-#write_csv2(plotTab, "sourceData_3c.csv")
 ```
 
 
@@ -307,7 +310,6 @@ plotMeanBeta <- ggplot(plotTab, aes(x = LF4, y = meanBeta)) +
   ylab("Mean beta values") + xlab("CLL-PD") +
   theme_full 
 
-#write_csv2(plotTab, "sourceData_3e.csv")
 plotMeanBeta
 ```
 
@@ -423,14 +425,14 @@ plotCpG <- ggplot(plotTab, aes(x=treat, y = CD19posKI67pos)) + #geom_boxplot(out
   geom_point(aes(fill = IGHV), shape =21, size =4, cex=4, alpha=0.8) +
   geom_segment(x =1, xend =2, y=40,yend=40, size=0.2) +
   geom_line(aes(x=treat,y=CD19posKI67pos, group = patID), col = "grey50", linetype = "dashed") +
-  geom_text(data =annoText, aes(label = tt), x = 1.5, y =40, vjust=-1, parse=TRUE) +
+  geom_text(data =annoText, aes(label = tt), x = 1.5, y =40, vjust=-1, parse=TRUE, size=5) +
   scale_fill_manual(values = colList[c(3,6)]) +
   facet_wrap(~group) +
   ylim(c(0,55)) + theme_half+
   theme(legend.position = "bottom", strip.text = element_text(size=15, face= "bold"),
         strip.background = element_rect(fill = "white",color = "white"),
-        axis.text.x = element_text(size=13),
-        legend.text = element_text(size=13),
+        axis.text.x = element_text(size=15.5),
+        legend.text = element_text(size=15),
         legend.title = element_text(size=13),
         legend.margin = margin(0,0,0,0),
         legend.box.margin=margin(-5,-5,-5,-5)) +
@@ -441,7 +443,7 @@ plotCpG
 ## Organizing plots for Section 3 in the manuscript
 
 ### Main Figure 3
-```{r figure3, fig.height=9, fig.width=16}
+```{r figure3, fig.height=10, fig.width=16}
 enMyc <- pictureGrob(readPicture(system.file("externalData//MYC.eps.xml", package = "mofaCLL")))
 
 title = ggdraw() + draw_figure_label("Figure 3", fontface = "bold", position = "top.left",size=22)
@@ -453,8 +455,8 @@ pout <- plot_grid(plot_grid(plotGeneWeight, plotGeneVolcano, ncol=1, labels = c(
           plot_grid(NULL, sigNumPlot,enMyc, plotCpG, ncol=1, labels = c("d","","f","g"), rel_heights = c(0.05,0.3,0.2,0.45), 
                     align = "hv", label_size = 22),
           ncol=3,rel_widths = c(1,0.9,1))
-pout
-#ggsave("figure3.pdf",height = 9, width = 16)
+
+plot_grid(title, pout, rel_heights = c(0.05,0.95), ncol = 1)
 ```
 
 ### Supplementary figures
@@ -470,8 +472,8 @@ pout
 
 
 #### Associations between LF4 and mutation load
-```{r mutLoad_LF, fig.height=6, fig.width=12}
+```{r mutLoad_LF, fig.height=4.5, fig.width=9}
 plot_grid(corTotal.wes, corTotal.wgs,
-          labels = c("a","b"), label_size = 22)
+          labels = c(" "," "), label_size = 22)
 ```
 

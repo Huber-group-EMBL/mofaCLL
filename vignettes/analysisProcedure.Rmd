@@ -1,5 +1,5 @@
 ---
-title: "Molecular basis for proliferative drive in chronic lymphocytic leukemia"
+title: "Multi-omics reveals clinically relevant proliferative drive associated with mTOR-MYC-OXPHOS activity in chronic lymphocytic leukemia"
 output: BiocStyle::html_document
 vignette: >
   %\VignetteIndexEntry{analysisProcedure}
@@ -10,7 +10,7 @@ vignette: >
 
 # Introduction
 
-This document shows a walktrough of the analyses done for the paper "Molecular basis for proliferative drive in chronic lymphocytic leukemia" by Lu J et al.
+This document shows a walktrough of the analyses done for the paper "Multi-omics reveals clinically relevant proliferative drive associated with mTOR-MYC-OXPHOS activity in chronic lymphocytic leukemia" by Lu J and Cannizzaro E et al.
 
 ***
 

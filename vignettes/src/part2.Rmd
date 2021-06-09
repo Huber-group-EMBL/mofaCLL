@@ -1,5 +1,5 @@
 ---
-title: 'Part 2: Analysis MOFA model and correlate latent factors with clinical outcomes'
+title: 'Part 2: Analysis MOFA model and correlate MOFA factors with clinical outcomes'
 output:
   BiocStyle::html_document
 ---
@@ -7,7 +7,9 @@ output:
 # Overview of MOFA output
 
 ```{r, message=FALSE, include=!exists(".standalone"), eval=!exists(".standalone")}
-knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+plotDir = ifelse(exists(".standalone"), "", "part2/")
+if(plotDir!="") if(!file.exists(plotDir)) dir.create(plotDir)
+knitr::opts_chunk$set(fig.path=plotDir, dev=c("png", "pdf"),message = FALSE, warning = FALSE)
 library(mofaCLL)
 library(survival)
 library(survminer)
@@ -88,10 +90,10 @@ pcaLF1
 ```{r}
 loadLF1 <- plotTopWeights.m(allWeights, "Mutations", "F1", nfeatures = 5) + 
   theme(axis.text = element_text(size=10),
-        axis.title = element_text(size=8))
+        axis.title = element_text(size=15))
 loadLF2 <- plotTopWeights.m(allWeights, "Mutations", "F2", nfeatures = 5) +
   theme(axis.text = element_text(size=10),
-        axis.title = element_text(size=8))
+        axis.title = element_text(size=15))
 ```
 
 **Factor 1**
@@ -113,7 +115,7 @@ plotTab <- filter(allFactors, factor %in% c("F1","F2")) %>%
 
 violinLF1_Meth <- ggplot(filter(plotTab, !is.na(Epitype)), aes(x=Epitype, y=F1, fill = Epitype)) +
   geom_violin() + geom_point() + scale_fill_manual(values = colList[4:length(colList)]) +
-  theme_full + theme(legend.position = "none", axis.title.y = element_text(vjust=-4)) +
+  theme_full + theme(legend.position = "none", axis.title.y = element_text(vjust=-2)) +
   xlab("") + ggtitle("Epigenetic subtypes")
 violinLF1_Meth
 ```
@@ -139,8 +141,6 @@ resTTT <- filter(testTab, !is.na(TTT)) %>%
   do(comSurv(.$value, .$TTT, .$treatedAfter, TRUE)) %>% ungroup() %>%
   arrange(p) %>% mutate(p.adj = p.adjust(p, method = "bonferroni")) %>%
   mutate(Endpoint = "TTT")
-
-#write_csv2(testTab, "sourceData_1b.csv")
 ```
 
 **Overall survival (OS)**
@@ -243,7 +243,6 @@ plotList1[["TTT"]] <- km(groupTab$subgroup, groupTab$TTT, groupTab$treatedAfter,
 plotList1[["OS"]] <- km(groupTab$subgroup, groupTab$OS, groupTab$died, "Overall survival", stat = "binary", maxTime = 7, showP = TRUE, showTable = TRUE, yLabelAdjust = -15)
 
 grid.arrange(grobs = plotList1, ncol = 2)
-#write_csv2(groupTab, "sourceData_1cd.csv")
 ```
 
 
@@ -260,15 +259,10 @@ riskTab <- gene[,c("IGHV","TP53","NOTCH1","del17p","SF3B1")] %>%
   mutate_if(is.numeric, as.factor) %>%
   left_join(select(demographic, patientID, age, sex), by = "patientID") %>%
   mutate(age = age/10) %>%
-  mutate(F4 = facTab[match(patientID, facTab$sample),]$value) %>%
+  mutate(F4 = facTab[match(patientID, facTab$sample),]$value,
+         IGHV = factor(IGHV, levels = c(0,1))) %>%
+  dplyr::rename(IGHV_mutated = IGHV, Sex_male = sex, Age = age) %>%
   filter(!is.na(F4))
-```
-
-```{r}
-outTab <- left_join(riskTab, survTab, by = "patientID") %>%
-  mutate(IGHV = ifelse(!is.na(IGHV), ifelse(IGHV == 1,"M","U"), NA))
-#write_csv2(outTab, "sourceData_1ef.csv")
-
 ```
 
 **Time to treatment**
@@ -303,7 +297,7 @@ plotTab <- left_join(demographic, facTab, by = c(patientID = "sample")) %>%
 
 corRes <- cor.test(plotTab$age, plotTab$value)
 pval <- formatNum(corRes$p.value, digits = 1)
-annoN <- sprintf("N = %s", nrow(filter(plotTab,!is.na(age))))
+annoN <- sprintf("n = %s", nrow(filter(plotTab,!is.na(age))))
 annoP <- bquote(italic("P")~"="~.(pval))
 annoCoef <- sprintf("coefficient = %1.2f",corRes$estimate)
 
@@ -319,6 +313,7 @@ plotAge <- ggplot(plotTab, aes(x = age, y = value)) +
   ylab("F4") + xlab("Age (years)") +
   theme_full
 plotAge
+
 ```
 
 
@@ -354,8 +349,8 @@ plotTab <- filter(plotTab, !is.na(pretreat)) %>%
 plotTreat <- ggplot(filter(plotTab,!is.na(pretreat)), aes(x = pretreat, y = value)) + 
   geom_violin(aes(fill = pretreat)) +
   geom_point() + 
-  annotate("text", x = Inf, y = Inf, label = annoP,
-           hjust=1.1, vjust =2, size = 5, parse = TRUE, col= colList[1]) +
+  annotate("text", x = -Inf, y = Inf, label = annoP,
+           hjust=-0.2, vjust =2, size = 5, parse = TRUE, col= colList[1]) +
   scale_fill_manual(values = colList[3:length(colList)]) +
   ylab("F4") + xlab("Pretreatment") +
   theme_full + theme(legend.position = "none")
@@ -429,7 +424,9 @@ riskTab <- gene[,c("IGHV","TP53","del17p","SF3B1")] %>%
   mutate_if(is.numeric, as.factor) %>%
   left_join(select(demographic, patientID, age, sex), by = "patientID") %>%
   mutate(age = age/10) %>%
-  mutate(F4 = facTab[match(patientID, facTab$sample),]$value) %>%
+  mutate(F4 = facTab[match(patientID, facTab$sample),]$value,
+         IGHV = factor(IGHV, levels = c(0,1))) %>%
+  dplyr::rename(IGHV_mutated = IGHV, Sex_male = sex, Age = age) %>%
   filter(!is.na(F4))
 ```
 
@@ -461,30 +458,30 @@ Pearson's correlation test
 LDT <- doublingTime %>% mutate(F4 = facTab[match(patID, facTab$sample),]$value) %>%
   filter(!is.na(F4)) %>%
   mutate(IGHV = as.factor(facTab[match(patID, facTab$sample),]$IGHV))
-corRes <- cor.test(log2(LDT$doubling.time), LDT$F4)
-#write_csv2(LDT, "sourceData_1g.csv")
+corRes <- cor.test(log10(LDT$doubling.time), LDT$F4)
 ```
 
 Scatter plot of correlations
 ```{r, fig.height=5, fig.width=5}
-#annoText <- sprintf("N = %s\ncoefficient = %1.2f\np = #%s",nrow(LDT),corRes$estimate,formatC(corRes$p.value, digits = 1, format = "e"))
 
 pval <- formatNum(corRes$p.value, digits = 1, format = "e")
 annoN <- sprintf("n = %s", nrow(LDT))
 annoP <- bquote(italic("P")~"="~.(pval))
 annoCoef <- sprintf("coefficient = %1.2f",corRes$estimate)
 
-corPlot <- ggplot(LDT, aes(x = F4, y = log2(doubling.time))) + 
+corPlot <- ggplot(LDT, aes(x = F4, y = doubling.time/30)) + 
   geom_point(fill =colList[5], shape =21, size=3) + 
-  geom_smooth(method = "lm", se=FALSE, color = "grey50", linetype ="dashed" ) + 
-   annotate("text", x = max(LDT$F4), y = Inf, label = annoN,
+  geom_smooth(method = "lm", se=FALSE, color = "grey50", linetype ="dashed" ) +
+  annotate("text", x = max(LDT$F4), y = Inf, label = annoN,
            hjust=1, vjust =1.5, size = 5, parse = FALSE, col= colList[1]) +
   annotate("text", x = max(LDT$F4), y = Inf, label = annoP,
            hjust=1, vjust =3.5, size = 5, parse = FALSE, col= colList[1]) +
   annotate("text", x = max(LDT$F4), y = Inf, label = annoCoef,
            hjust=1, vjust =5.5, size = 5, parse = FALSE, col= colList[1]) +
-  ylab("log2(doubling time)") + ggtitle("Lymphocyte doubling time") +
+  ylab(bquote("doubling time (months)")) + ggtitle("Lymphocyte doubling time") +
+  scale_y_log10() +
   theme_full
+
 
 corPlot
 ```
@@ -500,7 +497,7 @@ LDT <- doublingTime %>% mutate(F4 = facTab[match(patID, facTab$sample),]$value,
                                IGHV = as.factor(facTab[match(patID, facTab$sample),]$IGHV)) %>%
   filter(!is.na(F4),!is.na(IGHV))
 
-corRes <- car::Anova(lm(log2(doubling.time) ~ F4 + IGHV, data = LDT))
+corRes <- car::Anova(lm(log10(doubling.time) ~ F4 + IGHV, data = LDT))
 corRes
 ```
 
@@ -520,19 +517,20 @@ corRes.U
 
 Scatter plot of correlations, stratified by IGHV
 ```{r , fig.height=7, fig.width=8}
-annoM <- sprintf("'M-CLL: N = %s, coefficient = %1.2f,'~italic(P)~'= %s'",nrow(LDT.M), corRes.M$estimate, formatNum(corRes.M$p.value, digits = 1, format = "e"))
-annoU <- sprintf("'U-CLL: N = %s, coefficient = %1.2f,'~italic(P)~'= %s'", nrow(LDT.U), corRes.U$estimate,formatNum(corRes.U$p.value, digits = 1, format = "e"))
+annoM <- sprintf("'M-CLL: n = %s, coefficient = %1.2f,'~italic(P)~'= %s'",nrow(LDT.M), corRes.M$estimate, formatNum(corRes.M$p.value, digits = 1, format = "e"))
+annoU <- sprintf("'U-CLL: n = %s, coefficient = %1.2f,'~italic(P)~'= %s'", nrow(LDT.U), corRes.U$estimate,formatNum(corRes.U$p.value, digits = 1, format = "e"))
 
-corPlot.IGHV <- ggplot(LDT, aes(x = F4, y = log2(doubling.time), fill = IGHV, col = IGHV)) + 
+corPlot.IGHV <- ggplot(LDT, aes(x = F4, y = doubling.time/30, fill = IGHV, col = IGHV)) + 
   geom_point(shape=21, size=3, col = "black") + 
   geom_smooth(method = "lm", se=FALSE, linetype ="dashed" ) + 
   annotate("text", x = Inf, y = Inf, label = annoM,
-           hjust=1.05, vjust =1.2, size = 5, parse = TRUE, color = colList[1]) +
+           hjust=1.05, vjust =1.2, size = 4, parse = TRUE, color = colList[1]) +
   annotate("text", x = Inf, y = Inf, label = annoU,
-           hjust=1.05, vjust =2.5, size = 5, parse = TRUE, color = colList[2]) +
-  ylab("log2(doubling time)") + ggtitle("Lymphocyte doubling time") +
+           hjust=1.05, vjust =2.5, size = 4, parse = TRUE, color = colList[2]) +
+  ylab("doubling time (months)") + ggtitle("Lymphocyte doubling time") +
   scale_fill_manual(values = c(M = colList[1],U=colList[2])) +
   scale_color_manual(values = c(M = colList[1],U=colList[2])) +
+  scale_y_log10() +
   theme_full + theme(legend.position = "none")
 
 corPlot.IGHV
@@ -547,12 +545,13 @@ LDT.untreat <- doublingTime %>% mutate(F4 = facTab[match(patID, facTab$sample),]
 corRes <- cor.test(LDT.untreat$doubling.time, LDT.untreat$F4)
 
 annoText <- sprintf("'coefficient = %1.2f, '~italic(P)~'= %s'",corRes$estimate,formatNum(corRes$p.value, digits = 1, format = "e"))
-corPlot.untreat <- ggplot(LDT.untreat, aes(x = F4, y = log2(doubling.time))) + 
+corPlot.untreat <- ggplot(LDT.untreat, aes(x = F4, y = doubling.time/30)) + 
   geom_point(fill =colList[5], shape=21, size=3) + 
   geom_smooth(method = "lm", se=FALSE, color = "grey50", linetype ="dashed" ) + 
   annotate("text", x = 2.2, y = Inf, label = annoText,
-           hjust=1, vjust =2, size = 5, parse = TRUE, col= colList[1]) +
-  ylab("log2(doubling time)") + ggtitle(sprintf("Lymphocyte doubling time\n(untreated patients only, n=%s)",nrow(LDT.untreat))) +
+           hjust=1, vjust =2, size = 4, parse = TRUE, col= colList[1]) +
+  ylab("doubling time (months)") + ggtitle(sprintf("Lymphocyte doubling time\n(untreated patients only, n=%s)",nrow(LDT.untreat))) +
+  scale_y_log10() +
   theme_full
 
 corPlot.untreat
@@ -573,11 +572,10 @@ explainedDT <- ggplot(plotTab, aes(x=model, y = R2)) + geom_bar(stat = "identity
   geom_text(aes(x = model, y =0.01, label = model), hjust =0, fontface = "bold", size =5) +
   theme(axis.ticks.y = element_blank(), axis.text.y = element_blank(), legend.position = "none",
         axis.title.y = element_text( size =13)) +
-  xlab("Predictors") + ylab("Varianced explained") 
+  xlab("Predictors") + ylab("Variance explained") 
 explainedDT
           
 ```
-
 
 # Annotation for other four factor that only explain RNA expression variations
 
@@ -594,15 +592,17 @@ batchTab <- filter(allFactors , factor == "F3") %>%
 pval <- car::Anova(lm(value ~ factor(batch), batchTab))$`Pr(>F)`[1]
 pval <- formatNum(pval, digits = 2)
 pAnno <- bquote(italic("P")~"="~.(pval))
+colListNew <- colList[-4]
 pL3 <- ggplot(batchTab, aes(x=batch, y = value, col = batch)) +
   geom_boxplot() + 
   ggbeeswarm::geom_beeswarm() + 
-  scale_color_manual(values = colList) +
+  scale_color_manual(values = colListNew) +
   annotate("text", x=Inf, y=Inf, label=pAnno, hjust=1.5, vjust=1.5)+
   theme_full +
   theme(legend.position = "none") +
   ylab("F3 value") + xlab("") + ggtitle("F3 ~ RNAseq batch")
 pL3
+
 ```
 
 ## Factor 5
@@ -621,14 +621,18 @@ plotTab <- left_join(exprTab, facTab, by = "sample")
 
 
 pAnno <- bquote(italic("P")~"<"~.(10e-13))
-pL5 <- ggplot(plotTab, aes(y=value, x= log2(count), col = symbol)) +
+pL5 <- ggplot(plotTab, aes(y=log2(count), x= value, col = symbol)) +
   geom_point() + geom_smooth(method = "lm", se = FALSE) +
-  theme_full +
+  theme_half +
   scale_color_manual(values = colList) +
-  annotate("text", x=-Inf, y=Inf, label=pAnno, hjust=-0.5, vjust=1.5)+
-  ylab("F5 value") + xlab("log2(count)") +
-  ggtitle("F5 ~ T cell marker expressions") +
-  theme(legend.position = c(0.8,0.2))
+  annotate("text", x=-Inf, y=Inf, label=pAnno, hjust=-0.5, vjust=5, size=5)+
+  xlab("F5 value") + ylab(bquote("log"[2]*"(RNAseq count)")) +
+  ggtitle("T cell marker expressions ~ F5") +
+  theme(legend.position = c(0.8,0.15),
+        legend.text = element_text(size=15),
+        legend.title = element_text(size=15)) +
+  ylim(0,13)
+
 ```
 
 ## Factor 6
@@ -636,10 +640,17 @@ pL5 <- ggplot(plotTab, aes(y=value, x= log2(count), col = symbol)) +
 ```{r}
 fsea.results <- MOFA::runEnrichmentAnalysis(MOFAobject,view = "mRNA", factor =6 , feature.sets = reactomeGS)
 enL6 <- MOFA::plotEnrichment(MOFAobject, fsea.results, factor = 6, max.pathways = 5) +
+  ylab(bquote("-log"[10]*"(adjusted "*italic("P")~"value)")) +
   ggtitle("Pathways enriched for F6") + theme_half
+
+#source table
+outTab <- tibble(pathway = rownames(fsea.results$pval),
+                 PValue = fsea.results$pval[,1],
+                 adj.PValue = fsea.results$pval.adj[,1]) %>%
+  arrange(PValue)
 ```
 
-```{r}
+```{r, fig.height=5, fig.width=5}
 exprTab <- counts(rna[rowData(rna)$symbol %in% c("SOD1","GPX4"),],normalized = TRUE) %>%
   t() %>% as_tibble(rownames = "sample") %>% 
   pivot_longer(-sample, names_to="id", values_to = "count") %>%
@@ -653,14 +664,21 @@ p1 <- cor.test(~ value + log2(count), filter(plotTab, symbol == "SOD1"))
 p2 <- cor.test(~ value + log2(count), filter(plotTab, symbol == "GPX4"))
 
 pAnno <- bquote(italic("P")~"<"~.(10e-13))
-corL6 <- ggplot(plotTab, aes(y=value, x= log2(count), col = symbol)) +
+corL6 <- ggplot(plotTab, aes(y=log2(count), x= value, col = symbol)) +
   geom_point() + geom_smooth(method = "lm", se = FALSE) +
-  theme_full +
+  theme_half +
   scale_color_manual(values = colList) +
-  annotate("text", x=-Inf, y=Inf, label=pAnno, hjust=-0.5, vjust=1.5)+
-  ylab("F6 value") + xlab("log2(count)") +
-  ggtitle("F6 ~ SOD1 and GPX4") +
-  theme(legend.position = c(0.8,0.2))
+  annotate("text", x=-Inf, y=Inf, label=pAnno, hjust=-0.5, vjust=5, size=5)+
+  xlab("F6 value") + ylab(bquote("log"[2]*"(RNAseq count)")) +
+  ggtitle("SOD1 and GPX4 ~ F6") +
+  theme(legend.position = c(0.8,0.15),
+        legend.text = element_text(size=15),
+        legend.title  = element_text(size=15))
+
+
+
+
+#source data
 ```
 
 
@@ -669,9 +687,11 @@ corL6 <- ggplot(plotTab, aes(y=value, x= log2(count), col = symbol)) +
 ```{r}
 fsea.results <- MOFA::runEnrichmentAnalysis(MOFAobject,view = "mRNA", factor =7 , feature.sets = reactomeGS)
 enL7 <- MOFA::plotEnrichment(MOFAobject, fsea.results, factor = 7, max.pathways = 5) +
+  ylab(bquote("-log"[10]*"(adjusted "*italic("P")~"value)")) +
   ggtitle("Pathways enriched for F7") + theme_half
-```
 
+
+```
 
 
 ## Arrange plots for Section 1 in the manuscript
@@ -711,6 +731,7 @@ p <- ggplot(plotTab, aes_string(x = "view", y = "R2")) +
   theme_full +
   theme(strip.text = element_text(size =15))
 p
+
 ```
 
 ### Annotation of LF1 for Supplementary figure
@@ -718,10 +739,10 @@ p
 ```{r LF1_gene, fig.height=8, fig.width=12}
 
 plot_grid(plot_grid(loadLF1, loadLF2, violinLF1_Meth, 
-                    nrow =3, align = "hv", axis = "l", labels = c("a","b","c"), label_size = 20),
+                    nrow =3, align = "hv", axis = "l", labels = c(" "," "," "), label_size = 20),
           NULL,
           plot_grid(pcaLF1,NULL, nrow=2, rel_heights  = c(0.8,0.2)),
-          nrow = 1, rel_widths = c(0.4,.02, 0.6), labels = c("","","c"), label_size = 20)
+          nrow = 1, rel_widths = c(0.4,.02, 0.6), labels = c("",""," "), label_size = 20)
 
 ```
 
@@ -731,25 +752,25 @@ grid.arrange(grobs = c(tttList, osList), ncol =2)
 ```
 
 ### Lymphocyte doubling time for supplementary figure
-```{r LDT_IGHV,fig.width=12, fig.height=6}
+```{r LDT_IGHV,fig.width=9, fig.height=4.5}
 plot_grid(corPlot.untreat, NULL,corPlot.IGHV, nrow =1, rel_widths = c(1,0.1,1))
 ```
 
 ### Associations with demographics
-```{r LF4_ageSex, fig.width=6, fig.height=16}
+```{r LF4_ageSex, fig.width=4.5, fig.height=13.5}
 plot_grid(plotAge, NULL,plotSex, NULL, plotTreat,ncol=1, rel_heights  = c(1,0.1,1,0.1,1))
 ```
 
 ### Associations with outcomes in treatment-naive patients
-```{r LF4_outcome_untreated, fig.width=10, fig.height=14}
+```{r LF4_outcome_untreated, fig.width=10, fig.height=12}
 plot_grid(plot_grid(kmTTT.untreat, haTTT.untreat, nrow =2, align = "h", axis = "l", rel_heights = c(0.55,0.45)), NULL,
           plot_grid(kmOS.untreat, haOS.untreat, nrow =2, align = "h", axis = "l", rel_heights = c(0.55,0.45)), nrow=1, rel_widths = c(1,0.1,1) )
 ```
 
 ### Annotatons of other factors
 ```{r otherFactorExpalin, fig.height=10, fig.width=18}
-p <- plot_grid(plot_grid(pL3, pL5, corL6, nrow=1, rel_widths = c(1,0.8,0.8), labels = c("A","B","D"), label_size = 20),
-          plot_grid(enL6, enL7, nrow=1, labels = c("C","E"), label_size = 20, rel_widths = c(0.5,0.6)),nrow=2)
+p <- plot_grid(plot_grid(pL3, pL5, corL6, nrow=1, rel_widths = c(1,0.8,0.8), labels = c(" "," "," "), label_size = 20),
+          plot_grid(enL6, enL7, nrow=1, labels = c(" "," "), label_size = 20, rel_widths = c(0.5,0.6)),nrow=2)
 p
 ```
 

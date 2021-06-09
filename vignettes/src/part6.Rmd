@@ -8,10 +8,16 @@ output:
 
 ```{r, message=FALSE, include=!exists(".standalone"), eval=!exists(".standalone")}
 knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+plotDir = ifelse(exists(".standalone"), "", "part6/")
+if(plotDir!="") if(!file.exists(plotDir)) dir.create(plotDir)
+knitr::opts_chunk$set(fig.path=plotDir, dev=c("png", "pdf"))
+
 #load packages and dataset
 library(CATALYST)
 library(diffcyt)
 library(cowplot)
+library(mofaCLL)
 library(glmnet)
 library(RColorBrewer)
 library(pheatmap)
@@ -21,7 +27,7 @@ library(tidyverse)
 ```
 
 Download and load CyTOF data on EMLB server
-```{r,eval=TRUE}
+```{r}
 cytoPath <- file.path(tempdir(),"sceAll.RData")
 if(!file.exists(cytoPath)) {
   download.file("https://www.huber.embl.de/users/jlu/data/sceAll.RData",
@@ -33,6 +39,7 @@ if(!file.exists(cytoPath)) {
 md <- metadata(sceAll)$experiment_info %>% as_tibble()
 ```
 
+
 ## T-SNE plots
 
 ### T-SNE of all samples and cells, colored by cell types
@@ -42,7 +49,7 @@ plotTab <- reTab %>%
   mutate(cluster = factor(clustMap[as.character(stateCluster)], clustMap))
 p<-plotDM(plotTab, sceAll,colorBy = "cluster", x = "x",y="y", plotTitle = FALSE) +
   guides(color = guide_legend(ncol= 2,override.aes = list(alpha = 1, size = 6))) +
-  theme(legend.text = element_text(size=25), legend.title = element_text(size=20))
+  theme(legend.text = element_text(size=28), legend.title = element_text(size=20))
 p
 ```
 
@@ -56,7 +63,7 @@ sceCpG <- sceCpG[,sceCpG$condition == "CpG"]
 dmTab  <- getReducedDimTab(sceCpG,useDim)
 
 p <- plotDM(dmTab, sceCpG, "Ki-67", facetBy = "CLL-PD", facetCol = 2, x = "x", y =  "y", fast=FALSE, pointsize =3.2) +
-  theme(legend.text = element_text(size=20), legend.title = element_text(size=20))
+  theme(legend.text = element_text(size=22), legend.title = element_text(size=22))
 p
 ```
 
@@ -249,7 +256,6 @@ plot_grid(pPopCondi,
           pPopCLLPD + theme(axis.line.y = element_blank(), axis.ticks.y = element_blank(), axis.text.y = element_blank(),
                             axis.title.y = element_blank()),
           align = "hv", axis = "rb", rel_widths = c(0.65,0.35))
-#ggsave("proliferation_pop.pdf", height = 4, width = 9)
 ```
 
 
@@ -301,8 +307,8 @@ pCondi <- ggplot(annoTab, aes(x=Condition, y= "  Condition")) +
   geom_tile(fill = "white",color = "black", size=0.5, alpha=0) +
   scale_y_discrete(position = "right", expand = c(0,0)) +
   coord_cartesian(expand = FALSE) +
-  geom_text(aes(label = Condition),size=3.2, fontface = "plain") + theme_void() +
-  theme(axis.text.y = element_text(size=10, face = "bold"),
+  geom_text(aes(label = Condition),size=4.5, fontface = "plain", lineheight =0.8) + theme_void() +
+  theme(axis.text.y = element_text(size=12, face = "bold"),
         panel.background = element_rect(size=1, color = "black"))
 
 pPd <- ggplot(annoTab, aes(x=colID, y= "  CLL-PD")) +
@@ -310,8 +316,8 @@ pPd <- ggplot(annoTab, aes(x=colID, y= "  CLL-PD")) +
   scale_y_discrete(position = "right", expand = c(0,0)) +
   coord_cartesian(expand=FALSE) +
   scale_fill_manual(values = annoColor$`CLL-PD`) +
-  geom_text(aes(label = `CLL-PD`),size=4, fontface = "plain") + theme_void() +
-  theme(axis.text.y = element_text(size=10, face = "bold"), legend.position = "none",
+  geom_text(aes(label = `CLL-PD`),size=4.5, fontface = "plain") + theme_void() +
+  theme(axis.text.y = element_text(size=12, face = "bold"), legend.position = "none",
         panel.background = element_rect(size=1, color = "black"),
         plot.margin = margin(1,0,2,0))
 
@@ -328,7 +334,7 @@ pHeat <- pheatmap::pheatmap(as.matrix(exprMat), scale = "none", cluster_cols = F
                    treeheight_row = 20, clustering_method = "ward.D2", fontsize = 12, fontsize_row = 15,
                    show_colnames = FALSE, breaks = seq(-0.8,0.8, length.out = 100),
                    color = colorRampPalette(c(colList[2],"white",colList[1]))(101), silent = TRUE)$gtable
-plot_grid(plot_grid(NULL, pColAnno,  NULL, rel_widths = c(0.47, 8, 2.32), nrow=1),
+plot_grid(plot_grid(NULL, pColAnno,  NULL, rel_widths = c(0.47, 8, 2.1), nrow=1),
           pHeat, nrow=2, rel_heights = c(0.15,1))
 ```
 
@@ -371,7 +377,7 @@ plotVolcanoList <- function(resDE_condition, compareList, fdrCut = 0.05, cluster
 
     eachList <- lapply(compareList, function(eachPair) {
       plotTab <- dplyr::filter(resDE_condition, cluster_id == eachCluster, control == eachPair[1], treat == eachPair[2])
-      p <- plotCyToVolcano(plotTab, fdrCut = fdrCut,
+      p <- plotCyToVolcano(plotTab, fdrCut = fdrCut, labSize = 5.2,
                            plotTitle = sprintf("%s vs %s",condiMap[eachPair[2]], condiMap[eachPair[1]]), useFdr=useFdr, globalPcut = globalPcut)
       p
     })
@@ -382,6 +388,7 @@ plotVolcanoList <- function(resDE_condition, compareList, fdrCut = 0.05, cluster
 }
 
 ```
+
 
 ##### DMSO, CpG, CpG + Ever
 ```{r volcano_plot, fig.width=11, fig.height=6}
@@ -396,8 +403,6 @@ shareLegend(list(volList$CLL[[1]] + ylim(0, 9) + xlim(-1.7,1.7),
                          axis.title.y = element_blank())), 
             position = "bottom", ratio = c(1,0.05),
             rel_widths = c(0.55,0.5))
-
-
 ```
 
 
@@ -421,8 +426,8 @@ plotExprConditionFacet <- function(exprTab, markers, conditions, resDE_condition
     mutate(yRange = yMax-yMin)
   
   pTab <- left_join(pTab, rangeTab, by = c(marker_id="antigen")) %>%
-          mutate(annoP = ifelse(p_val < 1e-12, paste("italic(P)~'<",formatNum(1e-12, digits = 1),"'"),
-                                paste("italic(P)~'=",formatNum(p_val, digits = 1),"'"))) %>%
+          mutate(annoP = ifelse(p_val < 1e-12, paste("italic(P)*'<",formatNum(1e-12, digits = 1),"'"),
+                                paste("italic(P)*'=",formatNum(p_val, digits = 1),"'"))) %>%
     mutate(antigen = marker_id)
   
   scaleFUN <- function(x) sprintf("%.1f", x)
@@ -430,13 +435,13 @@ plotExprConditionFacet <- function(exprTab, markers, conditions, resDE_condition
   p<-ggplot(plotTab, aes(x=condiName, y=exprVal)) + 
     geom_point(aes(col = CLLPD), size=3) +
     geom_line(aes(group = patient_id, col = CLLPD), linetype = "solid",size=1) +
-    scale_y_continuous(labels=scaleFUN)+
+    scale_y_continuous(labels=scaleFUN, limits = c(0,NA), expand = expand_scale(add = c(0.1,0.5)))+
     geom_blank(data = pTab, aes(x=1, y=yMax + yRange*0.5)) +
     geom_segment(data = pTab, aes(x=x1, xend =x2, y = yMax+yRange*0.3, yend = yMax+yRange*0.3)) +
     geom_text(data = pTab, aes(label = annoP, x=xp, y=yMax+yRange*0.3), vjust=-1, parse=TRUE, size=4) +
     guides(col = guide_legend(override.aes = list(alpha = 1, size = 3))) +
     scale_color_manual(values = colorMap, name = "CLL-PD") + 
-    ylab("Median intensity") + xlab("")  +
+    ylab("Median intensity") + xlab("")+
     facet_wrap(~antigen, scale = "free_y") +
     theme_half  + theme(legend.position = "bottom", 
                         strip.text = element_text(size=15, face= "bold"),
@@ -454,7 +459,6 @@ plotExprConditionFacet <- function(exprTab, markers, conditions, resDE_condition
 #### Key markers 
 ```{r plot3Cond, fig.height = 4.5, fig.width = 10}
 plotExprConditionFacet(exprTab, c("CDK4","GLUT1","c-Myc","P-4E-BP1","P-S6K","P-AMPK alpha"),c("DMSO","CpG","CpG_Ever"), resDE_condition)
-#ggsave(filename = "plot3Cond.pdf", height = 4.5, width = 10)
 ```
 
 ## Differential marker expression related to CLL-PD
@@ -488,8 +492,6 @@ resDiffPd <- diffPdDE(sceTest,clusterUse) %>% mutate(p_adj = p.adjust(p_val, met
 markerList <- c("CDK4","GLUT1","c-Myc", "P-4E-BP1","P-S6K","P-AMPK alpha")
 p <- plotDiffExpr(exprTab, markerList, resDiffPd, useCondi = "CpG")
 p
-#ggsave(filename = "diffBoxExpr.pdf", height = 4, width = 10)
-
 ```
 
 
@@ -521,7 +523,7 @@ pVolPD <- plotVolcanoListPD(resDiffPd)
 
 #### Upon CpG treatment
 
-```{r suppl_volcano_CLLPD_CPG, fig.height = 7, fig.width = 7}
+```{r suppl_volcano_CLLPD_CPG, fig.height = 6, fig.width = 6}
 resDiffPd.cpg <- filter(resDiffPd, condition == "CpG") %>% 
   mutate(p_adj = p.adjust(p_val, method = "BH"))
 
@@ -531,9 +533,7 @@ p1 <- pVolPD$CLL$CpG + ylim(0, 3) + xlim(-0.8,0.8)
 
 p1
 
-#ggsave("suppl_volcano_CLLPD.png", p, height = 6, width = 12)
 ```
-
 
 
 ## Identify markers (other than proliferating markers) that differentiate proliferatign and non-proliferating cells
@@ -661,8 +661,6 @@ lassoPlotMarker <- function(lassoOut, sceObj, annoColor, freqCut = 0, coefCut = 
 }
 ```
 
-
-
 ### In CLL-PD high samples with proliferation
 
 Sample equal number of cells from proliferating and non-proliferating compartment
@@ -675,7 +673,7 @@ sceSub$stateCluster <- factor(cMap[as.character(sceSub$stateCluster)], levels = 
 useMarker <- setdiff(state_markers(sceSub),c("Ki-67","Cyclin B1","P-Rb"))
 ```
 
-```{r}
+```{r, cache=TRUE}
 set.seed(1118)
 lassoOut <- identifyMarker(sceSub, "stateCluster", useMarker, nCell = 500, repeats = 100, poolSample = FALSE)
 ```
@@ -689,11 +687,10 @@ sceVis <- cellSample(sceSub, "stateCluster", 500)
 col_fun1 = circlize::colorRamp2(c(0,1), c("white",colList[4]))
 col_fun2 = circlize::colorRamp2(c(0,1), c("white",colList[6]))
 col_fun3 = circlize::colorRamp2(c(0,1), c("white",colList[5]))
-
-annoColor <- list(state = c(proliferating = colList[1], `non-proliferating` = colList[2]), 
-                  `Ki-67` = col_fun1,
-                  `Cyclin B1` = col_fun1,
-                  `P-Rb` = col_fun1)
+annoColor <- list(state = c(proliferating = "#BD3D2A4E", `non-proliferating` = "#0071B87E"), 
+                  `Ki-67` = col_fun3,
+                  `Cyclin B1` = col_fun3,
+                  `P-Rb` = col_fun3)
 
 lassoPlotMarker(lassoOut, sceVis, annoColor = annoColor, coefCut = 0, freqCut = 0.8)
 ```

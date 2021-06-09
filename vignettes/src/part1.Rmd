@@ -7,6 +7,11 @@ output:
 # Prepare MOFA model
 
 ```{r, message=FALSE, include=!exists(".standalone"), eval=!exists(".standalone")}
+plotDir = ifelse(exists(".standalone"), "", "part1/")
+if(plotDir!="") if(!file.exists(plotDir)) dir.create(plotDir)
+knitr::opts_chunk$set(fig.path=plotDir, dev=c("png", "pdf"))
+
+
 library(mofaCLL)
 library(reticulate)
 library(DESeq2)
@@ -32,7 +37,6 @@ data("drug","gene","rna")
 ```
 
 Download methylation dataset from server to a temporary folder
-(The methylation data will be uploaded to ExperimentHub later)
 ```{r}
 methPath <- file.path(tempdir(),"meth.RData")
 if(!file.exists(methPath)) {
@@ -120,7 +124,7 @@ MOFAobject
 Overview of data
 ```{r mofaModel, fig.height=6, fig.width=12}
 p <- plotDataOverview.m(MOFAobject)
-p
+p$plot
 ```
 
 ## Setup MOFA training parameters

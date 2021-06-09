@@ -1,7 +1,6 @@
 Package: mofaCLL
 Type: Package
-Title: Molecular basis for proliferative drive in chronic lymphocytic
-        leukemia
+Title: Multi-omics reveals clinically relevant proliferative drive associated with mTOR-MYC-OXPHOS activity in chronic lymphocytic leukemia
 Version: 0.0.9
 Author: Junyan Lu
 Maintainer: Junyan Lu <junyan.lu@embl.de>
@@ -10,14 +9,42 @@ License: GNU General Public License v3.0
 Encoding: UTF-8
 LazyData: true
 RoxygenNote: 7.1.1
-Imports: DESeq2, SummarizedExperiment, glmnet
-Suggests: knitr, rmarkdown, reticulate, sva, MultiAssayExperiment,
-        MOFA, survival, xtable, survminer, maxstat, gridExtra, car,
-        cowplot, egg, ggrepel, ggbeeswarm, grImport, fgsea, limma,
-        GEOquery, pheatmap, genefilter, lubridate, tidyverse,
-        ComplexHeatmap, scattermore, CATALYST, diffcyt, tidygraph,
-        RColorBrewer, circlize, igraph, ggraph
+Imports:
+    DESeq2,
+    SummarizedExperiment,
+    glmnet
+Suggests: 
+    knitr,
+    rmarkdown,
+    reticulate,
+    sva,
+    MultiAssayExperiment,
+    MOFA,
+    survival,
+    xtable,
+    survminer,
+    maxstat,
+    gridExtra,
+    car,
+    cowplot,
+    egg,
+    ggrepel,
+    ggbeeswarm,
+    grImport,
+    fgsea,
+    limma,
+    GEOquery,
+    pheatmap,
+    genefilter,
+    lubridate,
+    tidyverse,
+    ComplexHeatmap,
+    scattermore,
+    CATALYST,
+    diffcyt,
+    tidygraph,
+    RColorBrewer,
+    circlize,
+    igraph,
+    ggraph
 VignetteBuilder: knitr
-NeedsCompilation: no
-Packaged: 2021-02-10 20:05:54 UTC; lu
-Depends: R (>= 3.5.0)

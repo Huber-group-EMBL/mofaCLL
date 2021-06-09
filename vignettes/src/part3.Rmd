@@ -6,6 +6,10 @@ output:
 
 ```{r, message=FALSE, include=!exists(".standalone"), eval=!exists(".standalone")}
 knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+plotDir = ifelse(exists(".standalone"), "", "part3/")
+if(plotDir!="") if(!file.exists(plotDir)) dir.create(plotDir)
+knitr::opts_chunk$set(fig.path=plotDir, dev=c("png", "pdf"))
+
 #Libraries
 library(mofaCLL)
 library(glmnet)
@@ -29,11 +33,11 @@ library(tidyverse)
 Load datasets
 ```{r}
 data("mofaOut","gene")
+setMap <- read_tsv(system.file("externalData/setToPathway.txt", package = "mofaCLL"), col_types = "cc")
 ```
 
 Download methylation dataset from server to a temporary folder
-(The methylation data will be uploaded to ExperimentHub later)
-```{r,eval=TRUE}
+```{r}
 methPath <- file.path(tempdir(),"meth.RData")
 if(!file.exists(methPath)) {
   download.file("https://www.huber.embl.de/users/jlu/data/meth.RData",
@@ -193,7 +197,13 @@ plotTab <- tibble(r2 = rnaRes$r2Test, set = "mRNA") %>%
   bind_rows(tibble(r2 = geneRes$r2Test, set = "Mutations")) %>%
   group_by(set) %>% summarise(meanR2 = mean(r2, na.rm = TRUE), sdR2 = sd(r2, na.rm = TRUE)) %>%
   arrange(desc(meanR2)) %>% mutate(set = factor(set, levels = set))
-#write_csv(plotTab, "sourceData_2aUp.csv")
+
+plotTabAll <- tibble(r2 = rnaRes$r2Test, set = "mRNA") %>%
+  bind_rows(tibble(r2 = methRes$r2Test, set = "Methylation")) %>%
+  bind_rows(tibble(r2 = drugRes$r2Test, set = "Drugs")) %>%
+  bind_rows(tibble(r2 = geneRes$r2Test, set = "Mutations")) %>%
+  mutate(set = factor(set, levels = levels(plotTab$set)))
+
 ```
 
 Summarize number of selected features
@@ -204,19 +214,27 @@ featureNum <-  tibble(n = nFeature(rnaRes), set = "mRNA") %>%
   bind_rows(tibble(n = nFeature(geneRes), set = "Mutations")) %>%
   group_by(set) %>% summarise(meanN = mean(n, na.rm = TRUE), sdN = sd(n, na.rm = TRUE)) %>%
   mutate(set = factor(set, levels = levels(plotTab$set)))
-#write_csv(featureNum, "sourceData_2aDown.csv")
+
+featureNumAll <-  tibble(n = nFeature(rnaRes), set = "mRNA") %>%
+  bind_rows(tibble(n = nFeature(methRes), set = "Methylation")) %>%
+  bind_rows(tibble(n = nFeature(drugRes), set = "Drugs")) %>%
+  bind_rows(tibble(n = nFeature(geneRes), set = "Mutations")) %>%
+  mutate(set = factor(set, levels = levels(plotTab$set)))
+
 ```
 
 ```{r,fig.height=6, fig.width=5}
 varExpBar <- ggplot(plotTab, aes(x=set, y = meanR2, fill = set)) + 
   geom_col(width = 0.4) +
+  ggbeeswarm::geom_quasirandom(data = plotTabAll, aes(x=set, y=r2), alpha =0.3, width = 0.2) +
   geom_errorbar(aes(ymin = meanR2 - sdR2, ymax = meanR2 + sdR2), width =0.2) +
   ylim(0,1) + xlab("data set") + ylab(bquote('Variance explained ('*R^2*')')) +
-  scale_fill_manual(values = structure(colList[1:4],names = as.character(plotTab$set))) +
+  scale_fill_manual(values = structure(c(colList[1:3],colList[5]),names = as.character(plotTab$set))) +
   theme_full +
   theme(legend.position = "none", axis.text.x = element_text(angle = 90, hjust =1, vjust =0.5))
 
 numBar <- ggplot(featureNum, aes(x=set, y = meanN)) + 
+  ggbeeswarm::geom_quasirandom(data = featureNumAll, aes(x=set, y =n), width = 0.2, alpha=0.3) +
   geom_point(size=3) +
   geom_errorbar(aes(ymin = meanN - sdN, ymax = meanN + sdN), width =0.2) +
   xlab("") + ylab("Number of features") +
@@ -345,14 +363,8 @@ riskTab <- colData(rnaExternal) %>% data.frame(stringsAsFactors = FALSE) %>%
   mutate_if(is.logical, as.numeric) %>%
   select(-TP53, -del17p) %>%
   dplyr::rename(patientID = sampleID) %>%
-  mutate(LF4 = y.pred[patientID], IGHV =as.factor(IGHV))
+  mutate(LF4 = y.pred[patientID], IGHV =factor(IGHV, levels = c("U","M")))
 
-```
-
-```{r}
-outTab <- left_join(riskTab, survT, by = "patientID")
-#write_csv2(outTab, "sourceData_2cdef.csv")
-#write_csv2(survT, "sourceData_2b_ICGC")
 ```
 
 #### Univariate test
@@ -401,22 +413,22 @@ grid.arrange(grobs = groupList, ncol = 2)
 
 **OS**
 ```{r, fig.height=8 ,fig.width=6}
-surv1 <- runCox(survT, dplyr::rename(riskTab, CLLPD= LF4), "OS", "died")
+surv1 <- runCox(survT, dplyr::rename(riskTab, CLLPD= LF4, IGHV_mutated = IGHV, Sex_male=sex, Age=age), "OS", "died")
 
 summary(surv1)
-haOS <- plotHazard(surv1, title = "Overall survival (ICGC-CLL)") + 
-  scale_y_log10(limits = c(0.3,8))
+haOS <- plotHazard(surv1, title = "OS (ICGC-CLL)") + 
+  scale_y_log10(limits = c(0.1,5))
 
 haOS
 ```
 
 Time to treatment
 ```{r, fig.height=8 ,fig.width=6}
-surv1 <- runCox(survT, dplyr::rename(riskTab, CLLPD = LF4), "TTT", "treatedAfter")
+surv1 <- runCox(survT, dplyr::rename(riskTab, CLLPD= LF4, IGHV_mutated = IGHV, Sex_male=sex, Age=age), "TTT", "treatedAfter")
 
 summary(surv1)
-haTTT <- plotHazard(surv1, title = "Time to treatment (ICGC-CLL)") + 
-  scale_y_log10(limits = c(0.3,8))
+haTTT <- plotHazard(surv1, title = "TTT (ICGC-CLL)") + 
+  scale_y_log10(limits = c(0.1,5))
 haTTT
 ```
 
@@ -496,10 +508,13 @@ plotC1C2
 
 ### Association with genomics
 
+
+
 ```{r}
 #t-test
 y <- y.pred
 geneICGC <- geneICGC[names(y),]
+dim(geneICGC)
 tRes <- apply(geneICGC, 2, function(x) {
   res <- t.test(y ~ as.factor(x), var.equal = TRUE)
   data.frame(p = res$p.value, 
@@ -514,50 +529,57 @@ filter(tRes, p.adj <0.05) %>% mutate_if(is.numeric, formatNum, digits =3, format
 plotGeneVolcano <- plotVolcano(tRes, posCol = colList[1], negCol = colList[2],
             x_lab = "Difference of mean", ifLabel = TRUE) + 
   theme(legend.position = "none",
-        plot.margin = margin(8,8,8,8),
-        axis.title.y = element_text(vjust=0))
+        plot.margin = margin(8,8,8,8))
 plotGeneVolcano
+
 ```
 
 ### Assocation with mutation load
+
+Function to plot and annotate assocations
+```{r}
+plotCor <- function(plotTab, x, y, x_label, y_label, title, color = "black") {
+  corRes <- cor.test(plotTab[[x]], plotTab[[y]], use = "pairwise.complete.obs")
+  annoCoef <- paste("'coefficient ='~",format(corRes$estimate,digits = 2))
+  annoP <- paste("italic(P)~'='~",formatNum(corRes$p.value, digits = 1, format = "e"))
+  
+  ggplot(plotTab, aes_string(x = x, y = y)) + 
+    geom_point(shape = 21, fill =color, size=3) + 
+    geom_smooth(method = "lm", se=FALSE, color = "grey50", linetype ="dashed" ) + 
+    annotate("text", x = max(plotTab[[x]]), y = Inf, label = annoCoef,
+           hjust=1, vjust =1.5, size = 5, parse = TRUE, col= colList[1]) +
+    annotate("text", x = max(plotTab[[x]]), y = Inf, label = annoP,
+           hjust=1, vjust =3, size = 5, parse = TRUE, col= colList[1]) +
+    ylab(y_label) + xlab(x_label) + ggtitle(title) +
+    theme_full + theme(plot.margin = margin(8,8,8,8))
+}
+```
+
 ```{r, fig.height=5, fig.width=5}
 plotTab <- tibble(value = y.pred,load=rnaExternal[,names(y.pred)]$mutationLoad) %>%
   filter(!is.na(load))
 
-corRes <- cor.test(plotTab$load, plotTab$value)
-pval <- formatNum(corRes$p.value, digits = 1, format = "e")
-annoN <- sprintf("N = %s", nrow(plotTab))
-annoP <- bquote(italic("P")~"="~.(pval))
-annoCoef <- sprintf("coefficient = %1.2f",corRes$estimate)
-
-plotMut <- ggplot(plotTab, aes(x = load, y = value)) + 
-  geom_point(color =colList[6]) + 
-  geom_smooth(method = "lm", se=FALSE, color = "grey50", linetype ="dashed" ) + 
-  annotate("text", x = max(plotTab$load), y = Inf, label = annoN,
-           hjust=1, vjust =1.5, size = 5, parse = FALSE, col= colList[1]) +
-  annotate("text", x = max(plotTab$load), y = Inf, label = annoP,
-           hjust=1, vjust =3.5, size = 5, parse = FALSE, col= colList[1]) +
-  annotate("text", x = max(plotTab$load), y = Inf, label = annoCoef,
-           hjust=1, vjust =5.5, size = 5, parse = FALSE, col= colList[1]) +
-  ylab("predicted CLL-PD") + xlab("Number of somatic mutations detected by WGS") +
-  theme_full
+plotMut <- plotCor(plotTab, "value", "load", "CLL-PD", "Total number of mutations",
+        sprintf("WGS dataset (ICGC, n=%s)",nrow(plotTab)), colList[[6]])
 plotMut
+
 ```
 
 
 ### Enrichment analysis
 
 ```{r, fig.height=8, fig.width=6}
-highSet <- c("MYC_TARGETS_V1", "MYC_TARGETS_V2", "MTORC1_SIGNALING","OXIDATIVE_PHOSPHORYLATION")
+highSet <- c("MYC targets v1", "MYC targets v2", "mTORC1 signaling","Oxidative phosphorylation")
 gmts = list(H = system.file("externalData/h.all.v6.2.symbols.gmt", package = "mofaCLL"))
 designMat <- model.matrix(~ 1 + y.pred)
 enrichRes <- runCamera(assay(rnaExt.vst[,names(y.pred)]), designMat, gmts$H, 
                        id = rowData(rnaExt.vst)$symbol, 
                        method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
                        plotTitle = "ICGC-CLL cohort (Hallmarks, 5% FDR)", 
-                       setToHighlight = highSet)
+                       setToHighlight = highSet, setMap = setMap)
 enrichICGC <- enrichRes$enrichPlot
 enrichICGC
+
 ```
 
 
@@ -573,7 +595,7 @@ gseList <- list()
 #### GSE22762 (Munic cohort)
 
 An eight-gene expression signature for the prediction of survival and time to treatment in chronic lymphocytic leukemia
-```{r,  warning=FALSE, message=FALSE, cache=TRUE}
+```{r,  warning=FALSE, message=FALSE}
 gse.all <- getGEO("GSE22762", GSEMatrix = TRUE)
 gse <- gse.all[[1]]
 gse$patID <- sapply(str_split(gse$title,"[_ ]"), function(x) x[4])
@@ -599,7 +621,7 @@ gseList[["GSE22762"]] <- gse
 #### GSE39671 (UCSD cohort)
 
 Expression data from untreated CLL patients
-```{r, warning=FALSE, message=FALSE, cache=TRUE}
+```{r, warning=FALSE, message=FALSE}
 gse <- getGEO("GSE39671", GSEMatrix = TRUE)
 gse <- gse[[1]]
 exprs(gse) <- log2(exprs((gse)))
@@ -619,7 +641,7 @@ gseList[["GSE39671"]] <- gse
 #### GSE10138 (Duke cohort)
 
 A Genomic Approach to Improve Prognosis and Predict Therapeutic Response in Chronic Lymphocytic Leukemia (Duke_VA)
-```{r, warning=FALSE, message=FALSE, cache=TRUE}
+```{r, warning=FALSE, message=FALSE}
 gse <- getGEO("GSE10138", GSEMatrix = TRUE)
 gse <- gse[[1]]
 
@@ -735,7 +757,6 @@ patAnno <- tibble(sampleID = rownames(pTab),
 plotTab <- tibble(sampleID = names(y.pred), factor = y.pred) %>%
   left_join(patAnno, by = "sampleID")
 
-#write_csv2(plotTab, "sourceData_2bMunich.csv")
 ```
 
 Factor vs TTT (cox regression)
@@ -756,10 +777,10 @@ sumOutcome <- mutate(bind_rows(mutate(pTTT, outcome = "TTT"),mutate(pOS,outcome 
 KM plots
 ```{r, fig.width=5, fig.height=6.5}
 kmTTT_m1 <- km(plotTab$factor, plotTab$TTT, plotTab$treatedAfter, stat = "maxstat", pval = pTTT$p,  
-   titlePlot = "Time to treatment (Munich, GSE22762)", showTable = TRUE)
+   titlePlot = "Time to treatment (Munich)", showTable = TRUE)
 
 kmOS_m1 <- km(plotTab$factor, plotTab$OS, plotTab$died, stat = "maxstat", pval =pOS$p,
-   titlePlot = "Overall survival (Munich, GSE22762)", showTable = TRUE)
+   titlePlot = "Overall survival (Munich)", showTable = TRUE)
 kmOS_m1
 kmTTT_m1
 ```
@@ -767,16 +788,16 @@ kmTTT_m1
 #### Enrichment analysis
 
 ```{r, fig.height=8, fig.width=10}
-highSet <- c("MYC_TARGETS_V1", "MYC_TARGETS_V2", "MTORC1_SIGNALING","OXIDATIVE_PHOSPHORYLATION")
 gmts = list(H = system.file("externalData/h.all.v6.2.symbols.gmt", package = "mofaCLL"))
 designMat <- model.matrix(~ 1 + y.pred)
 enrichRes <- runCamera(exprs(gse), designMat, gmts$H, 
                        id =fData(gse)$`Gene Symbol`, 
                        method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
                        plotTitle = "Munich cohort (Hallmarks, 5% FDR)", 
-                       setToHighlight = highSet)
+                       setToHighlight = highSet, setMap = setMap)
 enrichMunich <- enrichRes$enrichPlot
 enrichMunich
+
 ```
 
 
@@ -855,8 +876,6 @@ patAnno <- tibble(sampleID = colnames(gse),
 
 plotTab <- tibble(sampleID = names(y.pred), factor = y.pred) %>%
   left_join(patAnno, by = "sampleID")
-
-#write_csv2(plotTab, "sourceData_2bUCSD.csv")
 ```
 
 Factor vs TTT (cox regression)
@@ -872,7 +891,7 @@ sumOutcome <- mutate(pTTT, outcome = "TTT", cohort = "UCSD",n=nrow(plotTab)) %>%
 KM plots
 ```{r, fig.width=5, fig.height=6.5}
 kmTTT_m2 <- km(plotTab$factor, plotTab$TTT, plotTab$treatedAfter, stat = "maxstat", pval = pTTT$p,  
-   titlePlot = "Time to treatment (UCSD, GSE39671)", showTable = TRUE)
+   titlePlot = "Time to treatment (UCSD)", showTable = TRUE)
 
 kmTTT_m2
 ```
@@ -880,16 +899,16 @@ kmTTT_m2
 ##### Enrichment
 
 ```{r, fig.height=8, fig.width=10}
-highSet <- c("MYC_TARGETS_V1", "MYC_TARGETS_V2", "MTORC1_SIGNALING","OXIDATIVE_PHOSPHORYLATION")
 gmts = list(H = system.file("externalData/h.all.v6.2.symbols.gmt", package = "mofaCLL"))
 designMat <- model.matrix(~ 1 + y.pred)
 enrichRes <- runCamera(exprs(gse), designMat, gmts$H, 
                        id =fData(gse)$`Gene Symbol`, 
                        method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
                        plotTitle = "UCSD cohort (Hallmarks, 5% FDR)", 
-                       setToHighlight = highSet)
+                       setToHighlight = highSet, setMap = setMap)
 enrichUCSD <- enrichRes$enrichPlot
 enrichUCSD
+
 ```
 
 #### Duke cohort (GSE10138)
@@ -959,7 +978,6 @@ y.pred <- (y.pred - mean(y.pred))/(2*sd(y.pred))
 plotTab <- tibble(sampleID = names(y.pred), factor = y.pred) %>%
   left_join(patAnno, by = "sampleID")
 
-#write_csv2(plotTab, "sourceData_2bDUKE.csv")
 ```
 
 Factor vs TTT (cox regression)
@@ -977,7 +995,7 @@ sumOutcome <- mutate(pTTT, outcome = "TTT", cohort = "Duke",n=nrow(plotTab)) %>%
 KM plots
 ```{r, fig.width=5, fig.height=6.5}
 kmTTT_m3 <- km(plotTab$factor, plotTab$TTT, plotTab$treatedAfter, stat = "maxstat", pval =pTTT$p,  
-   titlePlot = "Time to treatment (Duke, GSE10138)", showTable = TRUE)
+   titlePlot = "Time to treatment (Duke)", showTable = TRUE)
 
 kmTTT_m3
 ```
@@ -985,14 +1003,14 @@ kmTTT_m3
 ##### Enrichment
 
 ```{r, fig.height=8, fig.width=10}
-highSet <- c("MYC_TARGETS_V1", "MYC_TARGETS_V2", "MTORC1_SIGNALING","OXIDATIVE_PHOSPHORYLATION")
+
 gmts = list(H = system.file("externalData/h.all.v6.2.symbols.gmt", package = "mofaCLL"))
 designMat <- model.matrix(~ 1 + y.pred)
 enrichRes <- runCamera(exprs(gse), designMat, gmts$H, 
                        id =fData(gse)$`Gene Symbol`, 
                        method = "camera", pCut = 0.05, ifFDR = TRUE, removePrefix = "HALLMARK_",
                        plotTitle = "Duke cohort (Hallmarks, 5% FDR)", 
-                       setToHighlight = highSet)
+                       setToHighlight = highSet, setMap = setMap)
 enrichDuke <- enrichRes$enrichPlot
 enrichDuke
 ```
@@ -1050,7 +1068,7 @@ plot_grid(title, pout, rel_heights = c(0.05,0.95), ncol = 1)
 
 ### Supplementary figure for KM-plots
 ```{r external_microarray, fig.height=17, fig.width=10}
-plot_grid(kmTTT, kmOS, kmTTT_m1, kmOS_m1, kmTTT_m2, kmTTT_m3, nrow =3, labels = "AUTO")
+plot_grid(kmTTT, kmOS, kmTTT_m1, kmOS_m1, kmTTT_m2, kmTTT_m3, nrow =3)
 ```
 
 ### Supplementary figure for the assocations between predicted CLL-PD and demographics in ICGC cohort
@@ -1059,8 +1077,8 @@ plot_grid(plotAge,plotSex,nrow=1)
 ```
 
 ### Supplementary figure for the associations between predicted CLL-PD and genomics in ICGC cohort
-```{r LF4_genetics_ICGC, fig.width=13, fig.height=6}
-plot_grid(plotGeneVolcano, NULL, plotMut,rel_widths = c(1,0.1,1), nrow =1, align = "hv")
+```{r LF4_genetics_ICGC, fig.width=9, fig.height=4.5}
+plot_grid(plotGeneVolcano, plotMut,rel_widths = c(1,1), nrow =1, align = "h", axis="t")
 ```
 
 ### Supplementary figure for the enrichment analysis in ICGC cohort
@@ -1070,7 +1088,7 @@ enrichICGC
 
 
 ### Supplementary figure for the enrichment analysis in four external cohorts
-```{r, enrich_AllFour, fig.height=12, fig.width=18}
+```{r, enrich_AllFour, fig.height=8, fig.width=16}
 plot_grid(enrichICGC, enrichMunich, enrichUCSD, enrichDuke, ncol=2,
           align = "hv", axis = "l")
 ```
