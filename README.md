@@ -1,8 +1,8 @@
 This package contains the R code implementing the computational analysis steps, in the form of Rmarkdown documents, that enable readers to reproduce all major figures and results reported in manuscript "Multi-omics reveals clinically relevant proliferative drive associated with mTOR-MYC-OXPHOS activity in chronic lymphocytic leukemia" by Lu and Cannizzaro et al.. In addition, the CLLPDestimate function in the R package can be used to compute CLL-PD from compatible gene expression data provided by users. Instructions can be found in the vignette of the package. 
 
-* [User guide for CLLPDestimate function](./vignettes/CLLPDestimate.html)
+* [User guide for CLLPDestimate function](https://huber-group-embl.github.io/mofaCLL/CLLPDestimate.html)
 
-* [Walkthrough of the analyses described in our paper](./vignettes/analysisProcedure.html)
+* [Walkthrough of the analyses described in our paper](https://huber-group-embl.github.io/mofaCLL/analysisProcedure.html)
 
 
 Copyright (C) 2021  Junyan Lu
