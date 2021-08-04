@@ -11,11 +11,13 @@ LazyData: true
 RoxygenNote: 7.1.1
 Imports:
     DESeq2,
+    latex2exp,
     SummarizedExperiment,
     glmnet
 Suggests: 
     knitr,
     rmarkdown,
+    BioCStyle,
     reticulate,
     sva,
     MultiAssayExperiment,
@@ -26,6 +28,7 @@ Suggests:
     maxstat,
     gridExtra,
     car,
+    vsn,
     cowplot,
     egg,
     ggrepel,
@@ -35,6 +38,7 @@ Suggests:
     limma,
     GEOquery,
     pheatmap,
+    magick,
     genefilter,
     lubridate,
     tidyverse,

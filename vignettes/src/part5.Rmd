@@ -35,9 +35,13 @@ library(tidyverse)
 
 Load datasets
 ```{r, warning=FALSE, message=FALSE}
+
 data("mofaOut","gene","drug","validateScreen","rna","seahorse","protein","mito")
+
 gmts = list(H = system.file("externalData/h.all.v6.2.symbols.gmt", package = "mofaCLL"))
+
 setMap <- read_tsv(system.file("externalData/setToPathway.txt", package = "mofaCLL"), col_types = "cc")
+
 mitoProtList <- readxl::read_xls(system.file("externalData/Human.MitoCarta3.0.xls", package = "mofaCLL"), 
                                  sheet = 2)$Symbol
 ```
@@ -75,7 +79,7 @@ detach("package:MOFA", unload = TRUE) #detach MOFA because it's "predict" functi
 ## Pre-processing data
 
 Processing RNAseq data
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 dds<-estimateSizeFactors(rna)
 dds$factor <- facTab[match(dds$PatID, facTab$sample),]$value
 dds$IGHV <- gene[match(dds$PatID, rownames(gene)),]$IGHV
@@ -93,7 +97,7 @@ ddsU.vst <- ddsSub.vst[,ddsSub.vst$IGHV %in% 0]
 ## Identify genes associated with CLL-PD
 
 Correlation test using DESeq2
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 factorMatrix <- facTab.all %>% spread(key = factor, value = value) %>%
   data.frame() %>% column_to_rownames("sample") 
 factorMatrix <- factorMatrix[colnames(ddsSub),]
@@ -209,14 +213,12 @@ col_fun = circlize::colorRamp2(c(min(colAnno$LF4),max(colAnno$LF4)), c("white",c
 annoColor <- list(`CLL-PD` = col_fun)
 colnames(colAnno) <- c("CLL-PD")
 
-plotSetHeatmapComplex(geneSigTab = corRes.sig, geneSet =gmts$H, setName = "HALLMARK_MTORC1_SIGNALING", exprMat, colAnno, plotTitle = "Hallmark mTORC1 signaling",scale = TRUE,
-                      annoCol = annoColor, highLight =  highLightList)
+plotSetHeatmapComplex(geneSigTab = corRes.sig, geneSet =gmts$H, setName = "HALLMARK_MTORC1_SIGNALING", exprMat, colAnno, plotTitle = "Hallmark mTORC1 signaling",scale = TRUE,annoCol = annoColor, highLight =  highLightList)
 ```
 
 **OXIDATIVE_PHOSPHORYLATION**
 ```{r heatmapOXPHOS,fig.height=12.5, fig.width=7}
-plotSetHeatmapComplex(geneSigTab = corRes.sig, geneSet =gmts$H, setName = "HALLMARK_OXIDATIVE_PHOSPHORYLATION", exprMat, colAnno, plotTitle = "Hallmark Oxidative phosphorylation",
-                      scale = TRUE, annoCol = annoColor, highLight =  highLightList)
+plotSetHeatmapComplex(geneSigTab = corRes.sig, geneSet =gmts$H, setName = "HALLMARK_OXIDATIVE_PHOSPHORYLATION", exprMat, colAnno, plotTitle = "Hallmark Oxidative phosphorylation", scale = TRUE, annoCol = annoColor, highLight =  highLightList)
 
 #get a percentage of mitochondiral proteins in this set
 allGeneInList <- intersect(corRes.sig$symbol, loadGSC(gmts$H)$gsc$HALLMARK_OXIDATIVE_PHOSPHORYLATION)
@@ -239,8 +241,7 @@ sum(allGeneInList %in% mitoProtList)
 filter(corRes.sig, symbol == "MYC")
 
 
-plotSetHeatmapComplex(geneSigTab = corRes.sig, geneSet =gmts$H, setName = "HALLMARK_MYC_TARGETS_V1", exprMat, colAnno, scale = TRUE,
-                      plotTitle = "Hallmark MYC targets v1", annoCol = annoColor, highLight =  highLightList)
+plotSetHeatmapComplex(geneSigTab = corRes.sig, geneSet =gmts$H, setName = "HALLMARK_MYC_TARGETS_V1", exprMat, colAnno, scale = TRUE, plotTitle = "Hallmark MYC targets v1", annoCol = annoColor, highLight =  highLightList)
 ```
 
 ## A network plot showing the overlap of gene enriched in those three pathways and annotate mitochondrial genes
@@ -321,7 +322,8 @@ comNet
 ### Query and pre-processing microarray data
 CLL cells were purified by negative selection using anti-CD3, anti-CD14 and anti-CD16 mouse monoclonal antibodies and Dynabeads coated with a pan anti-mouse IgG antibody. The purity of the CLL cells after negative selection was monitored by flow-cytometry and the percentage of CD5+/CD19+ cells exceeded 98% for each sample. CLL cells were resuspended in RPMI complete medium at a density of 2 × 105 and stimulated with 7.5 μg/ml complete phosphorothioate CpG ODN oligonucleotide 2006 (5′-TCGTCGTTTTGTCGTTTTGTCGTT-3′) or left unstimulated for 18 h.
 
-```{r, cache=TRUE}
+```{r, cache=FALSE}
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072*1000)
 gse30105 <- getGEO("GSE30105", GSEMatrix = TRUE)
 ```
 
@@ -332,7 +334,7 @@ gse$treatment <- factor(ifelse(grepl("Unstimulated",gse$title), "untreated","CPG
                         levels = c("untreated","CPG"))
 gse.vst <- gse
 exprs(gse.vst) <- normalizeVSN(exprs(gse))
-gse.vst <- gse.vst[fData(gse.vst)$`GENE_SYMBOL`!="",]
+gse.vst <- gse.vst[!fData(gse.vst)$`GENE_SYMBOL` %in% c(NA, ""),]
 #invariant filtering
 sds <- genefilter::rowSds(exprs(gse.vst))
 gse.vst <- gse.vst[sds > genefilter::shorth(sds)]
@@ -376,7 +378,7 @@ plotEnrich.CPG
 ## Signature of IL21 + CD40L 
 
 ### Pre-processing microarray data
-```{r,cache=TRUE}
+```{r,cache=FALSE}
 GSE50572 <- getGEO("GSE50572", GSEMatrix = TRUE)
 ```
 
@@ -393,7 +395,7 @@ gse$treatment <- factor(gse$treatment, levels =c("none","IL21_CD40L","Tcell"))
 
 gse.all <- gse
 exprs(gse.all) <- normalizeVSN(exprs(gse))
-gse.all <- gse.all[fData(gse.all)$`Gene Symbol`!="",]
+gse.all <- gse.all[!fData(gse.all)$`Gene Symbol` %in% c(NA, ""),]
 
 #invariant filtering
 sds <- genefilter::rowSds(exprs(gse.all))
@@ -468,11 +470,11 @@ plotEnrich.Tcell
 
 ## BCR-triggering signature by anti-IgM stimulation for 390 min  (GSE3941)
 
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 gse39411 <- getGEO("GSE39411", GSEMatrix = TRUE)
 ```
 
-```{r, cache=TRUE, eval= TRUE}
+```{r, cache=FALSE}
 gse <- gse39411[[1]]
 
 #subset for only B-cell and CLL without transfection
@@ -528,7 +530,7 @@ plotEnrich.IgM
 
 ```
 
-## Enrichment analysis using all avboe stimulation signatures
+## Enrichment analysis using all above stimulation signatures
 
 ```{r CpG_enrich, fig.height=4, fig.width=6}
 fgseaOut <- runFGSEA(corRes.rna, sigList, ifFDR = FALSE)
@@ -574,7 +576,7 @@ ncol(protCLL)
 ### Correlate protein expression with CLL-PD using proDA
 
 Fit the probailistic dropout model
-```{r, cache=TRUE,autodep = TRUE}
+```{r, cache=FALSE}
 CLLPD <- protCLL$CLLPD
 fit <- proDA::proDA(protMat, design = ~ CLLPD)
 ```
@@ -695,7 +697,7 @@ nrow(corRes.mito)
 ```
 
 
-Heatmap of significantly associated proteins (10% FDR), with mitochondrial proteins highlighed
+Heatmap of significantly associated proteins (10% FDR), with mitochondrial proteins highlighted
 ```{r allProtLF4, fig.height=12, fig.width=12}
 colAnno <- tibble(patID = colnames(protMat), 
                   CLL_PD = protCLL$CLLPD) %>%
@@ -704,7 +706,7 @@ colAnno <- tibble(patID = colnames(protMat),
 col_fun = circlize::colorRamp2(c(min(colAnno$CLL_PD),max(colAnno$CLL_PD)), c("white",colList[4]))
 annoColor <- list(CLL_PD = col_fun)
 plotMat <- assays(protCLL[corRes.sig.prot$id,rownames(colAnno)])[["QRILC"]]
-plotMat <- jyluMisc::mscale(plotMat, censor = 6)
+plotMat <- mscale(plotMat, censor = 6)
 
 protHeatmap <- plotSetHeatmapComplex(geneSigTab = corRes.sig.prot, geneSet = corRes.sig.prot$symbol,
                exprMat = protMat, colAnno = colAnno, 

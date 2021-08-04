@@ -1,4 +1,3 @@
-library(latex2exp)
 
 ########################################
 ###Functions for running the analysis###
@@ -660,14 +659,18 @@ plotSetHeatmap <- function(geneSigTab, geneSet, setName, exprMat, colAnno, scale
 #function to plot heatmap for each gene set (using complex heatmap)
 #' @export
 plotSetHeatmapComplex <- function(geneSigTab, geneSet, setName, exprMat, colAnno, scale = TRUE,
-                           rowAnno = NULL, annoCol = NULL, highLight = NULL, italicize = TRUE) {
+                           rowAnno = NULL, annoCol = NULL, highLight = NULL, italicize = TRUE, plotTitle = NULL) {
 
   if (length(geneSet) == 1) {#whether it's a list of direction of genes
     geneList <- loadGSC(geneSet)[["gsc"]][[setName]]
   } else {
     geneList <- geneSet
   }
-
+   
+  if (is.null(plotTitle)) {
+    plotTitle <- setName
+  }
+  
   sigGene <- dplyr::filter(geneSigTab, symbol %in% geneList) %>%
     arrange(desc(coef))
 
@@ -706,7 +709,7 @@ plotSetHeatmapComplex <- function(geneSigTab, geneSet, setName, exprMat, colAnno
                           cluster_columns  = FALSE, cluster_rows = FALSE,
                           row_names_gp = gpar(col = labelCol, fontface = labFont),
                           row_labels = rowLabs,
-                          column_title = setName, column_title_gp = gpar(cex= 1.5, fontface = "bold")
+                          column_title = plotTitle, column_title_gp = gpar(cex= 1.5, fontface = "bold")
   )
 }
 
@@ -841,14 +844,10 @@ scaleExprs <- function (x, margin = 2, q = 0.01)
 
 # Function to get median marker expression
 #' @export
-getMedian <- function(sceObj, useCluster, scale = FALSE) {
+getMedian <- function(sceObj, useCluster) {
   clustTab <- metadata(sceObj)$cluster_code
   allCluster <- clustTab[match(sceObj$cluster_id, clustTab$som100),][[useCluster]]
   exprMat <- assays(sceObj)[["exprs"]]
-
-  if (scale) {
-    exprMat <- scaleExprs(exprMat)
-  }
 
   sumTab <- lapply(seq(nrow(exprMat)), function(i) {
     data.frame(expr = exprMat[i,],
@@ -856,7 +855,6 @@ getMedian <- function(sceObj, useCluster, scale = FALSE) {
                cluster = allCluster) %>%
       group_by(sample_id, cluster) %>%
       summarise(medVal = median(expr, na.rm=TRUE),
-                meanVal = mean(expr, na.rm=TRUE),
                 .groups = "drop") %>%
       mutate(antigen = rownames(exprMat)[i])
   }) %>% bind_rows()
@@ -999,7 +997,7 @@ diffCondiDE <- function(sceTest, compareList, clusterUse) {
 
 #Function for CyTOF volcano plots
 #' @export
-plotCyToVolcano <- function(pTab, fdrCut = 0.10, x_lab = NULL, plotTitle = "",
+plotCyToVolcano <- function(pTab, fdrCut = 0.10, labSize =5, x_lab = NULL, plotTitle = "",
                             useFdr = TRUE, globalPcut = NULL) {
 
   pathMap <- c("c-Myc" = "MYC", "GLUT1" = "MYC", "CDK4" = "MYC",
@@ -1030,7 +1028,7 @@ plotCyToVolcano <- function(pTab, fdrCut = 0.10, x_lab = NULL, plotTitle = "",
     geom_vline(xintercept = 0, linetype = "dashed", alpha=0.5) +
     scale_fill_manual(values = c(n.s. = "grey80",
                                  up = colList[1], down = colList[2]),name = "") +
-    ggrepel::geom_label_repel(aes(label = marker_id, col = pathway), size=4.5, force = 5) +
+    ggrepel::geom_label_repel(aes(label = marker_id, col = pathway), size=labSize, force = 5, max.overlaps = 100) +
     scale_color_manual(values = pathColor, guide = FALSE) +
     theme_full +
     theme(legend.position = "bottom",

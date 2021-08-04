@@ -20,14 +20,15 @@ library(cowplot)
 library(mofaCLL)
 library(glmnet)
 library(RColorBrewer)
-library(pheatmap)
 library(ComplexHeatmap)
 library(scattermore)
 library(tidyverse)
 ```
 
-Download and load CyTOF data on EMLB server
+Load cyTOF dataset
 ```{r}
+rm(list = ls()) #clean environment
+
 cytoPath <- file.path(tempdir(),"sceAll.RData")
 if(!file.exists(cytoPath)) {
   download.file("https://www.huber.embl.de/users/jlu/data/sceAll.RData",
@@ -36,6 +37,7 @@ if(!file.exists(cytoPath)) {
 } else {
   load(cytoPath)
 }
+
 md <- metadata(sceAll)$experiment_info %>% as_tibble()
 ```
 
@@ -117,8 +119,9 @@ p
 
 ### Test for differential abundance
 ```{r}
-sceViable <- sceAll[,sceAll$typeCluster =="CLL"]
+sceViable <- sceAll[,sceAll$typeCluster == "CLL"]
 popTab <- getPop(sceViable,"stateCluster") %>% left_join(md, by = "sample_id")
+rm(sceViable)
 ```
 
 ```{r, warning=FALSE, message=FALSE}
@@ -186,11 +189,11 @@ names(plotPopCLLPD) <- condiList
 ```
 
 ### Proliferating fraction under CpG condition
-```{r, fig.height=5, fig.width=4}
+```{r pop_CLLPD, fig.height=5, fig.width=4}
 p <- plotPopCLLPD$CpG$CLL_proliferating
 pPopCLLPD <- p+ggtitle("proliferating CLL cells\n(CLL-PD high vs low)")  + ylim(0,50)
 
-pPopCLLPD
+#pPopCLLPD
 
 ```
 
@@ -247,7 +250,7 @@ plotPopCondition <- function(popTab, condiList, clusterList, colorBy = "CLL-PD",
 clusterList <- c("CLL_proliferating")
 condiList <- c("DMSO","CpG","CpG_Ever","Ever")
 pPopCondi <- plotPopCondition(popTab, condiList, clusterList, yLabel = "% in live CLL cells", plotTitle = "proliferating CLL cells\n(across conditions)") + ylim(0,50)
-pPopCondi
+#pPopCondi
 ```
 
 Combine and align axis for figure c and d
@@ -264,6 +267,7 @@ plot_grid(pPopCondi,
 Subset for CLL population
 ```{r}
 sceCLL <- subsetSCE(sceAll, cluster_id = "CLL", k = "typeCluster")
+#rm(sceAll)
 #select functional marker (non-linage and non-proliferating)
 markerUse <- setdiff(state_markers(sceCLL),c("Ki-67","Cyclin B1","P-Rb"))
 sceCLL <- sceCLL[rownames(sceCLL) %in% markerUse, ]
@@ -273,9 +277,29 @@ sceCLL <- sceCLL[rownames(sceCLL) %in% markerUse, ]
 ### Heatmap plot to summarise changes
 
 ```{r}
-exprTab <- getMedian(sceCLL, useCluster = "typeCluster", scale = FALSE) %>% left_join(md)
+getMedian <- function(sceObj, useCluster) {
+  clustTab <- metadata(sceObj)$cluster_code
+  allCluster <- clustTab[match(sceObj$cluster_id, clustTab$som100),][[useCluster]]
+  exprMat <- assays(sceObj)[["exprs"]]
+
+  sumTab <- lapply(seq(nrow(exprMat)), function(i) {
+    data.frame(expr = exprMat[i,],
+               sample_id = sceObj$sample_id,
+               cluster = allCluster) %>%
+      group_by(sample_id, cluster) %>%
+      summarise(medVal = median(expr, na.rm=TRUE),
+                .groups = "drop") %>%
+      mutate(antigen = rownames(exprMat)[i])
+  }) %>% bind_rows()
+  return(sumTab)
+}
+```
+
+```{r}
+exprTab <- getMedian(sceCLL, useCluster = "typeCluster") %>% left_join(md) %>%
+  mutate(exprVal = medVal)
 sumTab <- group_by(exprTab, condition, CLLPD, antigen) %>%
-  summarise(val = median(medVal)) %>%
+  summarise(val = median(exprVal)) %>%
   mutate(colID = paste0(condition, "_",CLLPD)) %>%
   ungroup()
 ```
@@ -350,18 +374,12 @@ compareList <- list(c("DMSO","CpG"),
 
 #cluster to use
 clusterUse <- "typeCluster"
-
-#sce object for testing
-sceTest <- sceCLL
-
-exprTab <- getMedian(sceTest,clusterUse) %>% left_join(md, by = "sample_id") %>%
-    mutate(exprVal = medVal)
 ```
 
 
 #### Performing test
 ```{r}
-resDE_condition <- diffCondiDE(sceTest, compareList, clusterUse) %>%
+resDE_condition <- diffCondiDE(sceCLL, compareList, clusterUse) %>%
   mutate(p_adj = p.adjust(p_val, method = "BH"))
 ```
 
@@ -378,7 +396,8 @@ plotVolcanoList <- function(resDE_condition, compareList, fdrCut = 0.05, cluster
     eachList <- lapply(compareList, function(eachPair) {
       plotTab <- dplyr::filter(resDE_condition, cluster_id == eachCluster, control == eachPair[1], treat == eachPair[2])
       p <- plotCyToVolcano(plotTab, fdrCut = fdrCut, labSize = 5.2,
-                           plotTitle = sprintf("%s vs %s",condiMap[eachPair[2]], condiMap[eachPair[1]]), useFdr=useFdr, globalPcut = globalPcut)
+                           plotTitle = sprintf("%s vs %s",condiMap[eachPair[2]], condiMap[eachPair[1]]), 
+                           useFdr=useFdr, globalPcut = globalPcut)
       p
     })
 
@@ -475,8 +494,7 @@ clusterPlot <- c("CLL")
 #sce object for testing
 sceTest <- subsetSCE(sceCLL, condiList = c("CpG","DMSO"))
 
-exprTab <- getMedian(sceTest,clusterUse) %>% left_join(md, by = "sample_id") %>%
-  mutate(exprVal = medVal)
+exprTab <- filter(exprTab, condition %in% c("CpG","DMSO"))
 ```
 
 
@@ -532,9 +550,12 @@ pVolPD <- plotVolcanoListPD(resDiffPd.cpg, fdrCut = 0.1, useFdr = TRUE)
 p1 <- pVolPD$CLL$CpG + ylim(0, 3) + xlim(-0.8,0.8)
 
 p1
-
 ```
 
+```{r}
+rm(sceTest)
+rm(sceCLL)
+```
 
 ## Identify markers (other than proliferating markers) that differentiate proliferatign and non-proliferating cells
 
@@ -671,9 +692,10 @@ sceSub <- sceAll[,sceAll$typeCluster =="CLL" & sceAll$condition == "CpG" & sceAl
 sceSub$stateCluster <- factor(cMap[as.character(sceSub$stateCluster)], levels = cMap)
 
 useMarker <- setdiff(state_markers(sceSub),c("Ki-67","Cyclin B1","P-Rb"))
+rm(sceAll)
 ```
 
-```{r, cache=TRUE}
+```{r}
 set.seed(1118)
 lassoOut <- identifyMarker(sceSub, "stateCluster", useMarker, nCell = 500, repeats = 100, poolSample = FALSE)
 ```

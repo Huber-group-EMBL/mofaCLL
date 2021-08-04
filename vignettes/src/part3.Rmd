@@ -37,7 +37,7 @@ setMap <- read_tsv(system.file("externalData/setToPathway.txt", package = "mofaC
 ```
 
 Download methylation dataset from server to a temporary folder
-```{r}
+```{r, eval=!exists(".standalone")}
 methPath <- file.path(tempdir(),"meth.RData")
 if(!file.exists(methPath)) {
   download.file("https://www.huber.embl.de/users/jlu/data/meth.RData",
@@ -47,6 +47,7 @@ if(!file.exists(methPath)) {
   load(methPath)
 }
 ```
+
 
 Get values for LF4
 ```{r}
@@ -65,7 +66,7 @@ detach("package:MOFA", unload = TRUE)
 ### Using gene expression dataset for predicting LF4
 
 Prepare model
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 y <- structure(facTab$value, names = facTab$sample)
 X <- trainData[["mRNA"]]
 X <- X[,complete.cases(t(X))]
@@ -78,7 +79,7 @@ X <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)$re
 ```
 
 Run regularised linear regression models
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 set.seed(5862)
 rnaRes <- runGlm(X,y, repeats = 20, folds=5, method = "lasso", lambda ="lambda.1se", testRatio = 0.3)
 ```
@@ -104,7 +105,7 @@ geneCoef
 ### Using methylation dataset for predicting LF4
 
 Prepare model
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 y <- structure(facTab$value, names = facTab$sample)
 X <- trainData[["Methylation"]]
 X <- X[,complete.cases(t(X))]
@@ -117,7 +118,7 @@ X <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)$re
 ```
 
 Run regularised linear regression models
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 methRes <- runGlm(X,y, repeats = 20, folds=5, method = "lasso", lambda ="lambda.1se", testRatio = 0.3)
 ```
 
@@ -141,7 +142,7 @@ methCoef
 ### Using drug responses
 
 Prepare model
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 y <- structure(facTab$value, names = facTab$sample)
 X <- trainData[["Drugs"]]
 X <- X[,complete.cases(t(X))]
@@ -154,7 +155,7 @@ X <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)$re
 ```
 
 Run glm model
-```{r, cache=TRUE, warning=FALSE}
+```{r, cache=FALSE, warning=FALSE}
 set.seed(5862)
 drugRes <- runGlm(X,y, repeats = 20, folds=5, method = "lasso", lambda ="lambda.1se", testRatio = 0.3)
 ```
@@ -162,7 +163,7 @@ drugRes <- runGlm(X,y, repeats = 20, folds=5, method = "lasso", lambda ="lambda.
 ### Using gene mutations
 
 Prepare model
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 y <- structure(facTab$value, names = facTab$sample)
 X <- trainData[["Mutations"]]
 
@@ -182,7 +183,7 @@ X <- X[sampleOverlap,]
 ```
 
 Run glm model
-```{r, cache=TRUE, warning=FALSE}
+```{r, cache=FALSE, warning=FALSE}
 set.seed(5862)
 geneRes <- runGlm(X,y, repeats = 20, folds=5, method = "lasso", lambda ="lambda.1se", testRatio = 0.3)
 ```
@@ -268,8 +269,9 @@ if(!file.exists(icgcPath)) {
 }
 ```
 
+
 Load and process ICGC expression dataset
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 rnaExt.vst <- varianceStabilizingTransformation(rnaExternal)
 
 #Adjusted for potential batch effect
@@ -280,7 +282,7 @@ assay(rnaExt.vst) <- exprMat.combat
 ```
 
 Load and process internal RNAseq dataset
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 rna$factor <- facTab[match(colnames(rna), facTab$sample),]$value
 rna <- rna[,!is.na(rna$factor)] #use samples with LF4 values
 rna.vst <- varianceStabilizingTransformation(rna)
@@ -306,7 +308,7 @@ exprMat.ext <- exprMat.ext[overGene,]
 ```
 
 Remove highly correlated gene in training data
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 X <- mscale(exprMat)
 #remove highly correlated genes
 reRes <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)
@@ -316,7 +318,7 @@ X <- reRes$reduced
 ### Predict factor value in ICGC cohort
 
 Build linear model using in-house CLL dataset
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 set.seed(5862)
 
 y <- rna.vst$factor
@@ -589,6 +591,7 @@ enrichICGC
 
 A list object to store external data
 ```{r}
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072*1000)
 gseList <- list()
 ```
 
@@ -686,7 +689,7 @@ gseList[["GSE10138"]] <- list(gse = gse, patAnno = patAnno)
 ##### Preprocessing
 
 Filter out low variant genes in both datasets
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 gse <- gseList$GSE22762
 
 #internal dataset
@@ -713,13 +716,13 @@ exprMat <- assay(rnaSub)[rownames(gseMat),]
 ##### Model trainning
 
 Remove highly correlated features in the training set
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 X <- mscale(exprMat)
 reRes <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)
 X <- reRes$reduced
 ```
 
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 set.seed(5862)
 y <- rna.vst$factor
 lassoRes <- runGlm(X,y, method = "lasso", repeats=20, folds=5, lambda ="lambda.1se")
@@ -805,7 +808,7 @@ enrichMunich
 
 ##### Preprocessing
 
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 gse <- gseList[["GSE39671"]]
 
 #internal dataset
@@ -833,14 +836,14 @@ exprMat <- assay(rnaSub)[rownames(gseMat),]
 ##### Model training
 
 Remove highly correlated features
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 X <- mscale(exprMat)
 #remove highly correlated genes
 reRes <- removeCorrelated(t(X), cutoff = 0.9, method = "pearson", record = FALSE)
 X <- reRes$reduced
 ```
 
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 set.seed(5862)
 y <- rna.vst$factor
 lassoRes <- runGlm(X,y, method = "lasso", repeats=20, folds=5, lambda ="lambda.1se")
@@ -914,7 +917,7 @@ enrichUCSD
 #### Duke cohort (GSE10138)
 
 ##### Preprocessing 
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 gse <- gseList$GSE10138$gse
 patAnno <- gseList$GSE10138$patAnno
 
@@ -942,13 +945,13 @@ exprMat <- assay(rnaSub)[rownames(gseMat),]
 ##### Model training
 
 Remove highly correlated features
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 X <- t(mscale(exprMat))
 reRes <- removeCorrelated(X, cutoff = 0.9, method = "pearson", record = FALSE)
 X <- reRes$reduced
 ```
 
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 set.seed(5862)
 y <- rna.vst$factor
 

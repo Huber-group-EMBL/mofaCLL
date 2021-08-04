@@ -39,7 +39,7 @@ data("mofaOut","gene","rna","mutLoad","tabFACS")
 ```
 
 Download methylation dataset from server to a temporary folder
-```{r}
+```{r, eval=!exists(".standalone")}
 methPath <- file.path(tempdir(),"meth.RData")
 if(!file.exists(methPath)) {
   download.file("https://www.huber.embl.de/users/jlu/data/meth.RData",
@@ -49,6 +49,7 @@ if(!file.exists(methPath)) {
   load(methPath)
 }
 ```
+
 
 
 Process MOFA model
@@ -243,7 +244,7 @@ corRecurr
 
 ## Correlation test using linear model
 
-```{r, cache=TRUE}
+```{r}
 methMat <- assays(meth[,colnames(meth) %in% facTab$sample])[["beta"]]
 factorMatrix <- facTab.all %>% spread(key = factor, value = value) %>%
   data.frame() %>% column_to_rownames("sample") 

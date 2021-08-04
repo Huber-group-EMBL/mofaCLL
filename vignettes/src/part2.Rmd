@@ -25,7 +25,7 @@ library(tidyverse)
 
 Load datasets
 ```{r}
-data("mofaOut", "survival", "gene", "demographic", "doublingTime","reactomeGS","rna")
+data("mofaOut", "survival", "gene", "demographic", "doublingTime", "reactomeGS", "rna")
 ```
 
 ## Variance explained by MOFA for each omic data
