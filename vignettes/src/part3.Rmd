@@ -595,7 +595,7 @@ Sys.setenv("VROOM_CONNECTION_SIZE" = 131072*1000)
 gseList <- list()
 ```
 
-#### GSE22762 (Munic cohort)
+#### GSE22762 (Munich cohort)
 
 An eight-gene expression signature for the prediction of survival and time to treatment in chronic lymphocytic leukemia
 ```{r,  warning=FALSE, message=FALSE}
@@ -684,7 +684,7 @@ gseList[["GSE10138"]] <- list(gse = gse, patAnno = patAnno)
 
 ### Test associations with outcomes
 
-#### Munic cohort (GSE22762)
+#### Munich cohort (GSE22762)
 
 ##### Preprocessing
 
