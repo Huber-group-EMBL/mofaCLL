@@ -577,7 +577,7 @@ explainedDT
           
 ```
 
-# Annotation for other four factor that only explain RNA expression variations
+# Annotation for the four other factors that only explain RNA expression variations
 
 ## Factor 3
 
