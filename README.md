@@ -25,7 +25,7 @@ docker run -d -p 8787:8787 -e DISABLE_AUTH=true lujunyan1118/mofacll
 
 4. In the current directory, you should see a folder called "vignettes_standalone", which contains the R Markdown files for reproducing the analysis results.
 
-**Note:** the last part of the analysis (part6.Rmd) involves a single-cell CyTOF dataset, which requires a relatively large amount of memory. If you experience crashing of the R environment, please consider increasing the memory usage limit of docker.
+**Note:** the last part of the analysis (part6.Rmd) involves a single-cell CyTOF dataset, which requires a relatively large amount of memory. If you experience that the processing of this script fails due to lack of memory, please consider increasing the memory usage limit of the docker container.
 
 
 ### More Help
