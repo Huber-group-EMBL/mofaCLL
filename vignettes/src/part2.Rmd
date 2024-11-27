@@ -181,7 +181,7 @@ haPlot <- ggplot(plotTab, aes(x=factor, y = HR, col = Endpoint, dodge = Endpoint
 haPlot
 ```
 
-## Kaplan-Meiler plots
+## Kaplan-Meier plots
 
 ### KM plot for overall survival (OS)
 ```{r, fig.width=8, fig.height=6}
@@ -387,7 +387,7 @@ resTTT <- filter(testTab, !is.na(TTT), factor == "F4") %>%
 resTTT
 ``` 
 
-### Kaplan-Meiler plots
+### Kaplan-Meier plots
 
 KM plot for overall survival (OS)
 ```{r, fig.width=4, fig.height=6}
@@ -577,7 +577,7 @@ explainedDT
           
 ```
 
-# Annotation for other four factor that only explain RNA expression variations
+# Annotation for the four other factors that only explain RNA expression variations
 
 ## Factor 3
 
